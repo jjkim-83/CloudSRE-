@@ -1,62 +1,62 @@
-name: Deploy Cloud SRE-NEXUS to Google Cloud Run
+# name: Deploy Cloud SRE-NEXUS to Google Cloud Run
 
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
+# on:
+#   push:
+#     branches: [ main ]
+#   workflow_dispatch:
 
-env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  REGION: asia-northeast3  # 서울 리전
-  SERVICE_NAME: cloud-sre-nexus
+# env:
+#   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+#   REGION: asia-northeast3  # 서울 리전
+#   SERVICE_NAME: cloud-sre-nexus
 
-jobs:
-  deploy:
-    name: Build & Deploy to Cloud Run
-    runs-on: ubuntu-latest
+# jobs:
+#   deploy:
+#     name: Build & Deploy to Cloud Run
+#     runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout Source Code
-        uses: actions/checkout@v4
+#     steps:
+#       - name: Checkout Source Code
+#         uses: actions/checkout@v4
 
-      # 1. Google Cloud 서비스 계정 키로 인증
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+#       # 1. Google Cloud 서비스 계정 키로 인증
+#       - name: Authenticate to Google Cloud
+#         uses: google-github-actions/auth@v2
+#         with:
+#           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      # 2. Cloud SDK 설정
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+#       # 2. Cloud SDK 설정
+#       - name: Set up Cloud SDK
+#         uses: google-github-actions/setup-gcloud@v2
 
-      # 3. Cloud Run 배포 (0원 최적화: 인스턴스 0개 자동 축소)
-      - name: Deploy to Cloud Run
-        run: |
-          gcloud run deploy ${{ env.SERVICE_NAME }} \
-            --source . \
-            --project ${{ env.PROJECT_ID }} \
-            --region ${{ env.REGION }} \
-            --platform managed \
-            --allow-unauthenticated \
-            --port 8501 \
-            --memory 512Mi \
-            --cpu 1 \
-            --min-instances 0 \
-            --max-instances 2 \
-            --set-env-vars "\
-              PROJECT_NAME=Cloud SRE-NEXUS,\
-              GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }},\
-              GEMINI_MODEL=gemini-1.5-flash,\
-              INFRA_SOURCE_TYPE=mock,\
-              INFRA_JSON_PATH=my_infra.json,\
-              ENABLE_MULTICLOUD=false,\
-              ENABLE_THIRD_PARTY_RAG=true,\
-              SLACK_WEBHOOK_URL=${{ secrets.SLACK_WEBHOOK_URL }},\
-              TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }},\
-              TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}"
+#       # 3. Cloud Run 배포 (0원 최적화: 인스턴스 0개 자동 축소)
+#       - name: Deploy to Cloud Run
+#         run: |
+#           gcloud run deploy ${{ env.SERVICE_NAME }} \
+#             --source . \
+#             --project ${{ env.PROJECT_ID }} \
+#             --region ${{ env.REGION }} \
+#             --platform managed \
+#             --allow-unauthenticated \
+#             --port 8501 \
+#             --memory 512Mi \
+#             --cpu 1 \
+#             --min-instances 0 \
+#             --max-instances 2 \
+#             --set-env-vars "\
+#               PROJECT_NAME=Cloud SRE-NEXUS,\
+#               GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }},\
+#               GEMINI_MODEL=gemini-1.5-flash,\
+#               INFRA_SOURCE_TYPE=mock,\
+#               INFRA_JSON_PATH=my_infra.json,\
+#               ENABLE_MULTICLOUD=false,\
+#               ENABLE_THIRD_PARTY_RAG=true,\
+#               SLACK_WEBHOOK_URL=${{ secrets.SLACK_WEBHOOK_URL }},\
+#               TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }},\
+#               TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}"
 
-      # 4. 배포 완료 후 접속 URL 출력
-      - name: Show Deployed Service URL
-        run: |
-          URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} --project ${{ env.PROJECT_ID }} --region ${{ env.REGION }} --format 'value(status.url)')
-          echo "🌐 배포 완료 URL: $URL"
+#       # 4. 배포 완료 후 접속 URL 출력
+#       - name: Show Deployed Service URL
+#         run: |
+#           URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} --project ${{ env.PROJECT_ID }} --region ${{ env.REGION }} --format 'value(status.url)')
+#           echo "🌐 배포 완료 URL: $URL"
