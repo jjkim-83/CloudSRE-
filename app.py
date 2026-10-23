@@ -4,8 +4,8 @@ Project       : Cloud SRE-NEXUS (Autonomous Cloud Operations & Architecture Copi
 File Path     : cloud_sre_nexus/app.py
 File Name     : app.py
 Description   : Streamlit 기반 SRE 에이전트 프론트엔드 대시보드 UI (한국어 번역 RSS 타이틀 연동)
-Last Modified : 2026-10-23 16:56:00 KST (Asia/Seoul)
-Version       : v1.8.1 (Azure RSS 환경변수 자동 참조 및 호출부 간소화)
+Last Modified : 2026-10-23 17:45:00 KST (Asia/Seoul)
+Version       : v1.9.0 (Azure Updates 릴리즈 & Status 장애 하이브리드 필터 분리 아키텍처)
 Author/Owner  : Cloud SRE Team
 =============================================================================
 A unified Streamlit UI dashboard connecting:
@@ -71,8 +71,9 @@ api_key = st.sidebar.text_input(
 
 model_options = [
     "gemini-3.8-flash",
+    "gemini-3.1-pro-preview",
+    "gemini-4-argon",
     "gemini-3.7-flash",
-    "gemini-3.6-flash",
     "gemini-3.5-flash-lite"
 ]
 default_model_idx = 0
@@ -282,7 +283,7 @@ with tab1:
                 st.markdown(f"**[서드파티 RAG]**\n{rag_context}")
 
 # ------------------------------------------------------------------------------
-# TAB 2: Live RSS Event Analysis & SRE Runbook (한국어 타이틀 지원)
+# TAB 2: Live RSS Event Analysis & SRE Runbook (하이브리드 필터 분리 지원)
 # ------------------------------------------------------------------------------
 with tab2:
     st.subheader("이벤트 감지 ➔ 인프라 & 서드파티 영향도 평가 ➔ 실시간 알림 전파")
@@ -291,42 +292,60 @@ with tab2:
     with col_mode:
         event_source_mode = st.radio(
             "이벤트 소스 선택:",
-            ["📡 실시간 Microsoft Azure 릴리즈 RSS (신규 공식 엔드포인트)", "🧪 SRE 시뮬레이션 시나리오 (테스트용)"],
+            ["📡 실시간 Microsoft Azure 피드 (장애·상태 & 릴리즈)", "🧪 SRE 시뮬레이션 시나리오 (테스트용)"],
             horizontal=True
         )
     with col_lang:
-        show_ko = st.toggle("🇰🇷 한국어 번역 보기", value=True, help="릴리즈 타이틀을 한국어 공학 표기로 자동 변환합니다.")
+        show_ko = st.toggle("🇰🇷 한국어 번역 보기", value=True, help="타이틀을 한국어 공학 표기로 자동 변환합니다.")
     
     event_title = ""
     event_details = ""
     event_link = ""
+    selected_item = None
 
     if "실시간" in event_source_mode:
-        col_rss_btn, col_rss_info = st.columns([1, 4])
-        with col_rss_btn:
-            if st.button("🔄 RSS 새로고침"):
+        col_cat, col_btn = st.columns([4, 1])
+        with col_cat:
+            cat_choice = st.radio(
+                "피드 분류 필터:",
+                ["🌟 전체 보기 (통합)", "🚨 장애 및 서비스 상태 (Status)", "🚀 신규 릴리즈 & 지원종료 (Updates)"],
+                horizontal=True
+            )
+        with col_btn:
+            st.write("")
+            if st.button("🔄 새로고침", use_container_width=True):
                 fetch_azure_rss_updates.clear()
                 st.rerun()
+
+        cat_param = "all"
+        if "장애" in cat_choice:
+            cat_param = "status"
+        elif "릴리즈" in cat_choice:
+            cat_param = "updates"
         
-        rss_items = fetch_azure_rss_updates(limit=8)
+        rss_items = fetch_azure_rss_updates(limit=10, category=cat_param)
         
         # 한국어 또는 영문 옵션 텍스트 생성
         if show_ko:
-            rss_options = [f"[{item['pub_date']}] {item.get('title_ko', item['title'])}" for item in rss_items]
+            rss_options = [f"[{item.get('badge', '공지')}] [{item['pub_date']}] {item.get('title_ko', item['title'])}" for item in rss_items]
         else:
-            rss_options = [f"[{item['pub_date']}] {item['title']}" for item in rss_items]
+            rss_options = [f"[{item.get('badge', '공지')}] [{item['pub_date']}] {item['title']}" for item in rss_items]
 
-        selected_idx = st.selectbox("최신 Azure 공식 업데이트 공지 선택:", range(len(rss_options)), format_func=lambda x: rss_options[x])
+        selected_idx = st.selectbox("확인할 클라우드 이벤트 선택:", range(len(rss_options)), format_func=lambda x: rss_options[x])
         selected_item = rss_items[selected_idx]
         
         event_title = selected_item.get("title_ko", selected_item["title"])
-        event_details = f"원문제목: {selected_item['title']}\n발행일: {selected_item['pub_date']}\n내용 요약: {selected_item['description']}"
+        event_details = f"구분: {selected_item.get('badge', '공지')}\n원문제목: {selected_item['title']}\n발행일: {selected_item['pub_date']}\n내용 요약: {selected_item['description']}"
         event_link = selected_item["link"]
         
         with st.container(border=True):
-            st.markdown(f"🇰🇷 **한국어 타이틀**: **{selected_item.get('title_ko', selected_item['title'])}**")
+            col_b1, col_b2 = st.columns([1, 4])
+            with col_b1:
+                st.info(f"**{selected_item.get('badge', '공지')}**")
+            with col_b2:
+                st.markdown(f"🇰🇷 **한국어 타이틀**: **{selected_item.get('title_ko', selected_item['title'])}**")
             st.caption(f"🌐 **원문 영문 제목**: {selected_item['title']}")
-            st.caption(f"🔗 **Azure 공식 원문 링크**: [{event_link}]({event_link})")
+            st.caption(f"🔗 **공식 원문 링크**: [{event_link}]({event_link})")
             st.markdown(f"📄 **공지 내용 요약**:\n{selected_item['description']}")
     else:
         sim_choice = st.selectbox(
@@ -347,9 +366,18 @@ with tab2:
             learn_context = learn_mcp.search(event_title)
             rag_context = rag_provider.search(event_title)
 
+            event_type_guide = ""
+            if selected_item and selected_item.get("category") == "status":
+                event_type_guide = "이 이벤트는 [긴급 장애 / 서비스 상태 이슈]입니다. 즉각적인 장애 격리(Isolation), 가용영역 우회(Failover), 비상 소통 및 실시간 모니터링 복구 위주로 런북을 작성하세요."
+            else:
+                event_type_guide = "이 이벤트는 [신규 릴리즈 / 기술 변경 / 지원 종료 예고]입니다. 아키텍처 호환성 검토, 사내 보안 규정 대조, 개발/운영 마이그레이션 단계별 적용 플랜 위주로 런북을 작성하세요."
+
             sys_prompt = f"""
 당신은 엔터프라이즈 Cloud SRE 긴급 대응 에이전트 ({settings.PROJECT_NAME})입니다.
 수신된 이벤트에 대해 운영 인프라와 서드파티 연동 환경에 미치는 영향도를 분석하고 보고서를 작성하세요.
+
+[이벤트 가이드]
+{event_type_guide}
 
 [이벤트 정보]
 • 제목: {event_title}
