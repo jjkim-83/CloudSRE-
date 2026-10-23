@@ -1,6 +1,9 @@
 """
 Cloud SRE-NEXUS: Autonomous Cloud Operations & Architecture Copilot
 ===================================================================
+최종 수정 일시: 2026-10-23 14:45:10 KST (Asia/Seoul)
+버전: v1.2.0 (Google 최신 모델 gemini-3.8-flash 반영 및 404 해결)
+===================================================================
 A unified Streamlit platform integrating:
 - Operations MCP: Loose-coupling via local mock ARM topology or live Azure MCP
 - Learning MCP: Live Microsoft Learn documentation search
@@ -21,7 +24,6 @@ from config import settings
 # 1. 플러그인 구조: 모듈형 프로바이더 아키텍처
 # ==============================================================================
 
-# [프로바이더 1] 운영 인프라 프로바이더 (운영 MCP / Mock ARM JSON 겸용)
 class InfraProvider:
     def __init__(self, mode: str = None, json_path: str = None, live_endpoint: str = None):
         self.mode = mode or settings.INFRA_SOURCE_TYPE
@@ -50,7 +52,6 @@ class InfraProvider:
         return f"[실시간 Azure MCP 연동] 엔드포인트: {self.live_endpoint}"
 
 
-# [프로바이더 2] 공식 지식 프로바이더 (학습 MCP: MS Learn)
 class LearnMCPProvider:
     def __init__(self, enable_multicloud: bool = None, search_limit: int = None, timeout: int = None):
         self.enable_multicloud = settings.ENABLE_MULTICLOUD if enable_multicloud is None else enable_multicloud
@@ -79,7 +80,6 @@ class LearnMCPProvider:
         return ms_text
 
 
-# [프로바이더 3] 서드파티 & 사내 가이드 RAG 프로바이더
 class ThirdPartyRAGProvider:
     def __init__(self, enabled: bool = None):
         self.enabled = settings.ENABLE_THIRD_PARTY_RAG if enabled is None else enabled
@@ -156,22 +156,20 @@ def send_telegram(bot_token: str, chat_id: str, text: str) -> bool:
 
 
 # ==============================================================================
-# 3. LLM 오케스트레이션 헬퍼 (다중 모델 자동 폴백 및 404 복구)
+# 3. LLM 오케스트레이션 헬퍼 (Google 2026 최신 모델 gemini-3.8-flash 지원)
 # ==============================================================================
 def call_gemini(api_key: str, system_prompt: str, user_prompt: str, preferred_model: str = None) -> str:
     active_key = str(api_key or settings.GEMINI_API_KEY).strip()
     if not active_key:
         return "⚠️ Secrets 또는 사이드바에 유효한 Gemini API Key를 입력해주세요."
     
-    # 2026 활성 모델 우선순위 자동 폴백 (404 Not Found 방지)
-    primary = (preferred_model or settings.GEMINI_MODEL or "gemini-2.5-flash").strip()
+    primary = (preferred_model or settings.GEMINI_MODEL or "gemini-3.8-flash").strip()
     candidate_models = [
         primary,
+        "gemini-3.8-flash",
+        "gemini-3.1-pro-preview",
         "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-flash",
-        "gemini-2.5-pro"
+        "gemini-2.0-flash"
     ]
     models_to_try = []
     for m in candidate_models:
@@ -202,7 +200,6 @@ def call_gemini(api_key: str, system_prompt: str, user_prompt: str, preferred_mo
             
             last_error_details.append(f"• {model} (HTTP {e.code}): {detail_msg}")
             
-            # 404(모델 미지원)일 경우 다음 최신 모델로 즉시 폴백
             if e.code == 404:
                 continue
             elif e.code in (400, 403):
@@ -233,10 +230,10 @@ api_key = st.sidebar.text_input(
 )
 
 model_options = [
+    "gemini-3.8-flash",
+    "gemini-3.1-pro-preview",
     "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash-latest",
-    "gemini-2.5-pro"
+    "gemini-2.0-flash"
 ]
 default_model_idx = 0
 if settings.GEMINI_MODEL in model_options:
@@ -246,7 +243,7 @@ selected_model = st.sidebar.selectbox(
     "Gemini 모델 선택",
     options=model_options,
     index=default_model_idx,
-    help="Google 공식 정책에 따라 2.5-flash 또는 2.0-flash 사용을 권장합니다."
+    help="Google 공식 권장: gemini-3.8-flash"
 )
 
 st.sidebar.markdown("---")
