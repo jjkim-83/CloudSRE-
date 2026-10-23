@@ -4,18 +4,19 @@ Project       : Cloud SRE-NEXUS (Autonomous Cloud Operations & Architecture Copi
 File Path     : cloud_sre_nexus/app.py
 File Name     : app.py
 Description   : Streamlit 기반 SRE 에이전트 통합 UI 및 다중 프로바이더 오케스트레이션
-Last Modified : 2026-10-23 15:05:00 KST (Asia/Seoul)
-Version       : v1.4.0 (Mock UI 업로드/편집, 멀티클라우드 MCP 슬롯, RAG 지식 시각화)
+Last Modified : 2026-10-23 15:30:00 KST (Asia/Seoul)
+Version       : v1.5.0 (RAG 1단계 동적 PDF/TXT 문서 인덱싱 및 가이드 탑재)
 Author/Owner  : Cloud SRE Team
 =============================================================================
 A unified Streamlit platform integrating:
 - Operations MCP: Loose-coupling via local mock ARM topology (Web Upload/Edit) or live Azure MCP
 - Learning MCP: Live Microsoft Learn search + AWS/GCP Multi-Cloud MCP Expansion
-- Third-Party & Internal RAG: Palo Alto NVA, Datadog, Confluent, and compliance policies (With UI Previews)
+- Third-Party & Internal RAG: Built-in 4 solutions + Dynamic PDF/TXT/MD document uploader & parser
 - Event Trigger & Real-time Dispatcher: Slack & Telegram alerts
 All settings and credentials loaded via centralized config (.env & st.secrets).
 """
 
+import io
 import json
 import os
 import time
@@ -24,6 +25,13 @@ import urllib.parse
 import urllib.error
 import streamlit as st
 from config import settings
+
+# PDF 파싱 라이브러리 (pypdf) 안전 임포트
+try:
+    import pypdf
+    PYPDF_AVAILABLE = True
+except ImportError:
+    PYPDF_AVAILABLE = False
 
 # ==============================================================================
 # 1. 플러그인 구조: 모듈형 프로바이더 아키텍처
@@ -98,11 +106,13 @@ class LearnMCPProvider:
         return ms_text
 
 
-# [프로바이더 3] 서드파티 & 사내 가이드 RAG 프로바이더
+# [프로바이더 3] 서드파티 & 사내 가이드 RAG 프로바이더 (동적 문서 결합)
 class ThirdPartyRAGProvider:
-    def __init__(self, enabled: bool = None):
+    def __init__(self, enabled: bool = None, custom_docs: list = None):
         self.enabled = settings.ENABLE_THIRD_PARTY_RAG if enabled is None else enabled
-        self.kb = [
+        
+        # 기본 내장 서드파티 및 사내 보안 규정 지식베이스 (4종)
+        self.base_kb = [
             {
                 "solution": "Palo Alto VM-Series NVA",
                 "category": "보안 & 네트워크 라우팅",
@@ -128,6 +138,11 @@ class ThirdPartyRAGProvider:
                 "content": "모든 가상 머신(VM)은 관리자 포트(22, 3389)를 공용 인터넷에 절대 직접 노출할 수 없으며 Azure Bastion을 통해서만 접속해야 함. 스토리지 계정은 최소 TLS 1.2 이상(향후 TLS 1.3 전환 준비) 및 프라이빗 엔드포인트 연동이 강제됨."
             }
         ]
+        
+        # 사용자가 업로드한 커스텀 문서 병합
+        self.kb = list(self.base_kb)
+        if custom_docs:
+            self.kb.extend(custom_docs)
 
     def search(self, query: str) -> str:
         if not self.enabled:
@@ -136,8 +151,14 @@ class ThirdPartyRAGProvider:
         q = query.lower()
         matched = []
         for item in self.kb:
-            if any(term in q for term in [item["solution"].lower(), item["category"].lower(), "palo alto", "방화벽", "datadog", "모니터링", "confluent", "kafka", "카프카", "사내", "규정", "보안", "nva", "서드파티", "tls"]):
-                matched.append(f"📌 [서드파티/사내 RAG] **{item['title']}**\n- 솔루션: {item['solution']}\n- 분류: {item['category']}\n- 내용: {item['content']}")
+            searchable = (item["solution"] + " " + item["category"] + " " + item["title"] + " " + item["content"]).lower()
+            keywords = [item["solution"].lower(), item["category"].lower(), "palo alto", "방화벽", "datadog", "모니터링", "confluent", "kafka", "카프카", "사내", "규정", "보안", "nva", "서드파티", "tls", "인프라", "감사", "런북"]
+            if any(k in q for k in keywords) or any(term in searchable for term in q.split() if len(term) > 1):
+                matched.append(f"📌 [서드파티/사내 RAG] **{item['title']}**\n- 솔루션/분류: {item['solution']} ({item['category']})\n- 내용: {item['content']}")
+
+        if not matched and self.kb:
+            for item in self.kb[:2]:
+                matched.append(f"📌 [서드파티/사내 RAG (참조)] **{item['title']}**\n- 솔루션/분류: {item['solution']} ({item['category']})\n- 내용: {item['content']}")
 
         return "\n\n".join(matched) if matched else "일치하는 서드파티 RAG 문서가 없습니다."
 
@@ -252,7 +273,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# 세션 상태 초기화 (커스텀 인프라 JSON 보존)
+# 세션 상태 초기화: 커스텀 인프라 JSON
 if "mock_infra_data" not in st.session_state:
     try:
         with open(settings.INFRA_JSON_PATH, "r", encoding="utf-8") as f:
@@ -261,6 +282,10 @@ if "mock_infra_data" not in st.session_state:
         st.session_state["mock_infra_data"] = {
             "virtual_networks": [{"name": "vnet-prod-kr", "address_space": "10.0.0.0/16"}]
         }
+
+# 세션 상태 초기화: 사용자 업로드 RAG 문서 목록
+if "custom_rag_docs" not in st.session_state:
+    st.session_state["custom_rag_docs"] = []
 
 st.sidebar.title(f"⚙️ {settings.PROJECT_NAME}")
 st.sidebar.caption("중앙 환경 변수 & Secrets 연동 상태")
@@ -307,17 +332,15 @@ if "Live" in infra_mode:
     )
     infra_provider = InfraProvider(mode="live", live_endpoint=live_endpoint)
 else:
-    # Mock 모드: 웹에서 직접 업로드 및 에디터로 수정 가능
     with st.sidebar.expander("🛠️ 인프라 JSON 업로드 / 화면 직접 편집", expanded=False):
-        uploaded_file = st.file_uploader("인프라 JSON 파일 업로드", type=["json"])
-        if uploaded_file is not None:
+        uploaded_infra_file = st.file_uploader("인프라 JSON 파일 업로드", type=["json"], key="infra_uploader")
+        if uploaded_infra_file is not None:
             try:
-                st.session_state["mock_infra_data"] = json.load(uploaded_file)
-                st.success("새로운 인프라 JSON 파일이 메모리에 로드되었습니다!")
+                st.session_state["mock_infra_data"] = json.load(uploaded_infra_file)
+                st.success("새로운 인프라 JSON이 반영되었습니다!")
             except Exception as e:
                 st.error(f"JSON 파싱 실패: {e}")
         
-        # 텍스트 에디터에서 직접 수정
         current_json_str = json.dumps(st.session_state["mock_infra_data"], ensure_ascii=False, indent=2)
         edited_json = st.text_area("인프라 스펙 직접 편집", value=current_json_str, height=220)
         if st.button("💾 편집 내용 인프라에 즉시 반영"):
@@ -350,7 +373,7 @@ learn_mcp = LearnMCPProvider(
     gcp_endpoint=gcp_endpoint
 )
 
-# --- 3. 서드파티 RAG 프로바이더 설정 ---
+# --- 3. 서드파티 RAG 프로바이더 설정 & 동적 문서 업로드 ---
 st.markdown("---")
 enable_rag = st.sidebar.checkbox(
     "3. 서드파티 & 사내 가이드 RAG 활성화",
@@ -358,13 +381,57 @@ enable_rag = st.sidebar.checkbox(
     help="Palo Alto, Datadog, Confluent 및 사내 보안 규정 지식베이스 교차 검증"
 )
 
-rag_provider = ThirdPartyRAGProvider(enabled=enable_rag)
-
 if enable_rag:
-    with st.sidebar.expander("📚 참조 대상 서드파티 지식베이스 (4건)", expanded=False):
+    with st.sidebar.expander("📄 RAG 문서 추가 (PDF / TXT / MD 업로드)", expanded=False):
+        uploaded_rag_file = st.file_uploader(
+            "사내 규정/서드파티 매뉴얼 업로드",
+            type=["pdf", "txt", "md"],
+            key="rag_doc_uploader",
+            help="PDF 문서는 텍스트가 자동 추출되어 지식베이스에 즉시 추가됩니다."
+        )
+        if uploaded_rag_file is not None:
+            doc_exists = any(d["title"] == uploaded_rag_file.name for d in st.session_state["custom_rag_docs"])
+            if not doc_exists:
+                content_text = ""
+                file_ext = uploaded_rag_file.name.split(".")[-1].lower()
+                
+                # PDF 파일 파싱 (pypdf 활용)
+                if file_ext == "pdf":
+                    if PYPDF_AVAILABLE:
+                        try:
+                            pdf_reader = pypdf.PdfReader(io.BytesIO(uploaded_rag_file.read()))
+                            extracted = [page.extract_text() or "" for page in pdf_reader.pages]
+                            content_text = "\n".join(extracted)
+                        except Exception as e:
+                            st.error(f"PDF 파싱 실패: {e}")
+                    else:
+                        st.warning("pypdf 라이브러리가 없어 텍스트를 추출할 수 없습니다.")
+                else:
+                    content_text = uploaded_rag_file.read().decode("utf-8", errors="ignore")
+
+                if content_text.strip():
+                    new_doc = {
+                        "solution": uploaded_rag_file.name.rsplit(".", 1)[0],
+                        "category": "사용자 업로드 규정/매뉴얼",
+                        "title": uploaded_rag_file.name,
+                        "content": content_text[:3500]
+                    }
+                    st.session_state["custom_rag_docs"].append(new_doc)
+                    st.success(f"'{uploaded_rag_file.name}' 문서가 RAG에 추가되었습니다!")
+
+        if st.session_state["custom_rag_docs"]:
+            st.caption(f"✨ 사용자 업로드 문서 {len(st.session_state['custom_rag_docs'])}건 활성화됨")
+            if st.button("🗑️ 업로드 문서 초기화", key="reset_rag_docs"):
+                st.session_state["custom_rag_docs"] = []
+                st.rerun()
+
+    rag_provider = ThirdPartyRAGProvider(enabled=enable_rag, custom_docs=st.session_state["custom_rag_docs"])
+    with st.sidebar.expander(f"📚 참조 대상 서드파티 지식 ({len(rag_provider.kb)}건)", expanded=False):
         for item in rag_provider.kb:
             st.markdown(f"**• {item['solution']}** ({item['category']})")
             st.caption(f"_{item['title']}_")
+else:
+    rag_provider = ThirdPartyRAGProvider(enabled=False)
 
 # --- 4. 알림 채널 설정 ---
 st.sidebar.markdown("---")
@@ -386,12 +453,13 @@ if st.sidebar.button("🔔 알림 테스트"):
 # 메인 화면 레이아웃
 # ==============================================================================
 st.title(f"☁️ {settings.PROJECT_NAME}")
-st.caption("운영 MCP (내 인프라) + 학습 MCP (MS Learn + 멀티클라우드) + 서드파티 RAG (Palo Alto, Datadog 등) + 실시간 런북 전파")
+st.caption("운영 MCP (내 인프라) + 학습 MCP (MS Learn + 멀티클라우드) + 서드파티 RAG (사내 규정/매뉴얼 동적 연동) + 실시간 런북 전파")
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "💬 인프라 & 서드파티 AI 질의응답 (User Chat)",
     "⚡ 이벤트 분석 & 알림 전파 (SRE Report)",
     "🧩 데이터 소스 모니터 (MCP & RAG 상태)",
+    "📖 시스템 아키텍처 & RAG 가이드",
     "🔗 Google Apps Script 웹훅 연동"
 ])
 
@@ -399,12 +467,12 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # TAB 1: User Chat
 # ------------------------------------------------------------------------------
 with tab1:
-    st.subheader("인프라 토폴로지 + 공식 문서 + 서드파티 솔루션 교차 질의")
+    st.subheader("인프라 토폴로지 + 공식 문서 + 서드파티/사내 규정 교차 질의")
     col1, col2 = st.columns([4, 1])
     with col1:
         user_query = st.text_input(
             "질문을 입력하세요:",
-            placeholder="예: Palo Alto 방화벽을 우리 VNet에 연동할 때 주의점과 보안 위배 사항을 알려줘."
+            placeholder="예: Palo Alto 방화벽을 우리 VNet에 연동할 때 주의점과 사내 보안 규정 위배 사항을 알려줘."
         )
     with col2:
         st.write("")
@@ -516,14 +584,36 @@ with tab3:
         st.caption("현재 적용 중인 인프라 토폴로지 (사이드바에서 업로드 및 실시간 편집 가능)")
         st.json(infra_provider.infra_data)
     with col_b:
-        st.write("**2. 서드파티 & 사내 가이드 RAG 지식베이스**")
-        st.caption("사내 보안 규정 및 서드파티 NVA/모니터링 아키텍처 규칙")
+        st.write(f"**2. 서드파티 & 사내 가이드 RAG 지식베이스 (총 {len(rag_provider.kb)}건)**")
+        st.caption("사내 보안 규정, 서드파티 NVA/모니터링 규칙 및 사용자 업로드 PDF/TXT")
         st.json(rag_provider.kb)
 
 # ------------------------------------------------------------------------------
-# TAB 4: Google Apps Script Webhook
+# TAB 4: Architecture & RAG Guide
 # ------------------------------------------------------------------------------
 with tab4:
+    st.subheader("💡 Cloud SRE-NEXUS 전체 아키텍처 및 RAG 가이드")
+    st.markdown("""
+### 1. 왜 Microsoft 공식 문서 외에 '서드파티 RAG'가 필수적인가요?
+* **MS Learn 공식 문서(학습 MCP)**는 Azure 자체의 표준 기능과 일반적인 설정법만 알려줍니다.
+* 하지만 실제 기업 클라우드 환경에서는 **Palo Alto 차세대 방화벽(NVA), Datadog 모니터링, Confluent Kafka**, 그리고 **"관리자 포트 인터넷 직접 오픈 금지", "TLS 1.2 강제" 같은 사내 보안 규정**이 얽혀 있습니다.
+* 마이크로소프트 공식 문서는 사내 보안 규정이나 서드파티 솔루션과의 라우팅 충돌을 알지 못하므로, **서드파티 RAG를 통해 사내 정책과 연동 매뉴얼을 함께 주입해야만 '사내 인프라 맞춤형' 진단**이 가능합니다.
+
+---
+
+### 2. RAG(검색 증강 생성) 동작 3단계 원리
+1. **문서 수집 (Ingestion)**: 사이드바의 파일 업로더를 통해 사내 보안 규정 PDF나 매뉴얼을 등록합니다 (`pypdf` 자동 텍스트 추출).
+2. **지식 결합 (Fusion)**: 사용자가 질문하거나 인프라 이벤트가 발생하면 다음 3가지 소스를 융합합니다:
+   - ① **운영 MCP**: 현재 내 인프라 자원 목록 (서브넷, VM 스펙, NSG)
+   - ② **학습 MCP**: Microsoft Learn 공식 기술 문서
+   - ③ **서드파티 RAG**: 사내 보안 규정 + 서드파티 연동 지침
+3. **교차 검증 (Reasoning)**: Gemini AI가 3가지 지식을 대조하여 **"사내 규정을 위배하지 않으면서 서드파티 솔루션을 올바르게 연결하는 런북"**을 생성합니다.
+""")
+
+# ------------------------------------------------------------------------------
+# TAB 5: Google Apps Script Webhook
+# ------------------------------------------------------------------------------
+with tab5:
     st.subheader("Google Apps Script ➔ 본 통합 시스템 연동 안내")
     st.markdown(f"설정된 웹훅 URL: `{settings.GAS_WEBHOOK_URL}`")
     st.info("💡 Streamlit은 웹 화면용 서버이므로, Google Apps Script에서는 슬랙/메신저로 알림을 쏘며 아래 주소를 클릭하도록 링크를 전달하는 방식을 권장합니다.")
