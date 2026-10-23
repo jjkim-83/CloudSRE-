@@ -4,8 +4,8 @@ Project       : Cloud SRE-NEXUS (Autonomous Cloud Operations & Architecture Copi
 File Path     : cloud_sre_nexus/services.py
 File Name     : services.py
 Description   : SRE 에이전트 핵심 비즈니스 로직 및 프로바이더 모듈 (MCP, RAG, RSS, LLM, 알림)
-Last Modified : 2026-10-23 16:20:00 KST (Asia/Seoul)
-Version       : v1.7.0 (모듈 분리 리팩토링 및 신규 MS 릴리즈 RSS 엔드포인트 연동)
+Last Modified : 2026-10-23 16:25:00 KST (Asia/Seoul)
+Version       : v1.8.0 (Azure RSS 한국어 자동 번역 타이틀 및 하이브리드 로컬라이제이션)
 Author/Owner  : Cloud SRE Team
 =============================================================================
 """
@@ -13,14 +13,23 @@ Author/Owner  : Cloud SRE Team
 import io
 import json
 import os
+import re
 import time
 import urllib.request
 import urllib.parse
 import urllib.error
 import xml.etree.ElementTree as ET
-import streamlit as st
 from config import settings
 
+# Streamlit 캐시 데코레이터 안전 임포트
+try:
+    import streamlit as st
+    cache_data = st.cache_data
+except Exception:
+    def cache_data(ttl=None):
+        return lambda f: f
+
+# PDF 파싱 라이브러리 안전 임포트
 try:
     import pypdf
     PYPDF_AVAILABLE = True
@@ -29,12 +38,88 @@ except ImportError:
 
 
 # ==============================================================================
+# 0. Azure RSS 영문 타이틀 한국어 번역 헬퍼 (규칙 기반 + LLM 하이브리드)
+# ==============================================================================
+def quick_translate_title(title: str) -> str:
+    """핵심 릴리즈 키워드를 공학적 한국어 표기로 즉시 변환"""
+    t = title.strip()
+    replacements = [
+        (r"General availability:?", "[정식 출시/GA]"),
+        (r"Generally available:?", "[정식 출시/GA]"),
+        (r"Public preview:?", "[공개 프리뷰]"),
+        (r"Private preview:?", "[비공개 프리뷰]"),
+        (r"Retirement notice:?", "[지원 종료(은퇴) 공지]"),
+        (r"Retirement of", "[지원 종료]"),
+        (r"Retiring:?", "[지원 종료]"),
+        (r"Announcing:?", "[공식 발표]"),
+        (r"Announcement:?", "[공식 안내]"),
+        (r"Deprecation:?", "[지원 중단/폐지]"),
+        (r"Support for", "지원:"),
+        (r"support for", "지원:"),
+        (r"now available in", "➔ 사용 가능:"),
+        (r"is now available", "정식 지원 개시"),
+        (r"now in public preview", "공개 프리뷰 시작"),
+        (r"now in general availability", "정식 출시(GA) 시작"),
+    ]
+    for pattern, rep in replacements:
+        t = re.sub(pattern, rep, t, flags=re.IGNORECASE).strip()
+    return t
+
+
+def translate_titles_batch(items: list, api_key: str = "") -> list:
+    """Gemini API를 활용해 5~8개 RSS 타이틀을 한 번에 한국어로 매끄럽게 번역"""
+    active_key = str(api_key or settings.GEMINI_API_KEY).strip()
+    
+    # 1단계: 규칙 기반 번역 기본 적용
+    for item in items:
+        item["title_ko"] = quick_translate_title(item["title"])
+    
+    if not active_key or not items:
+        return items
+
+    # 2단계: Gemini API를 통해 자연스러운 한국어 문맥 번역 보정 (1회 일괄 호출)
+    titles_text = "\n".join([f"{i+1}. {it['title']}" for i, it in enumerate(items)])
+    prompt = (
+        "다음 Microsoft Azure 공식 릴리즈 공지 영문 제목들을 한국어 IT 클라우드 엔지니어가 읽기 편한 자연스러운 한국어로 번역해줘.\n"
+        "다른 설명 없이 번역된 제목만 번호 순서대로 한 줄씩 출력해:\n\n"
+        f"{titles_text}"
+    )
+    
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.GEMINI_MODEL}:generateContent?key={active_key}"
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.1}
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "x-goog-api-key": active_key}
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            translated_lines = data["candidates"][0]["content"]["parts"][0]["text"].strip().split("\n")
+            
+            for line in translated_lines:
+                line = line.strip()
+                match = re.match(r"^(\d+)[\.\)]\s*(.+)$", line)
+                if match:
+                    idx = int(match.group(1)) - 1
+                    if 0 <= idx < len(items):
+                        items[idx]["title_ko"] = match.group(2).strip()
+    except Exception:
+        pass  # 실패 시 규칙 기반 번역 유지
+    
+    return items
+
+
+# ==============================================================================
 # 1. 실시간 Azure Updates RSS 피드 수집기 (신규 MS 공식 엔드포인트)
 # ==============================================================================
-@st.cache_data(ttl=1800)
-def fetch_azure_rss_updates(limit: int = 8):
+@cache_data(ttl=1800)
+def fetch_azure_rss_updates(limit: int = 8, api_key: str = ""):
     """
-    Microsoft 공식 신규 릴리즈 RSS 엔드포인트에서 최신 공지 비동기 수집
+    Microsoft 공식 신규 릴리즈 RSS 엔드포인트에서 최신 공지 비동기 수집 및 한국어화
     - 신규 공식 주소: https://www.microsoft.com/releasecommunications/api/v2/azure/rss
     """
     candidate_urls = [
@@ -47,13 +132,13 @@ def fetch_azure_rss_updates(limit: int = 8):
         "Accept": "application/rss+xml, application/xml, text/xml, */*"
     }
 
+    raw_items = []
     for url in candidate_urls:
         try:
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=7) as resp:
                 xml_data = resp.read()
                 root = ET.fromstring(xml_data)
-                updates = []
                 for item in root.findall("./channel/item")[:limit]:
                     title = item.findtext("title", default="제목 없음").strip()
                     desc = item.findtext("description", default="").strip()
@@ -65,38 +150,40 @@ def fetch_azure_rss_updates(limit: int = 8):
                     if len(clean_desc) > 250:
                         clean_desc = clean_desc[:250] + "..."
 
-                    updates.append({
+                    raw_items.append({
                         "title": title,
                         "description": clean_desc,
                         "link": link or "https://azure.microsoft.com/en-us/updates/",
                         "pub_date": pub_date[:16] if pub_date else "최근 업데이트"
                     })
-                if updates:
-                    return updates
+                if raw_items:
+                    break
         except Exception:
             continue
 
-    # 네트워크 일시 차단 시 안정적인 기본 최신 릴리즈 목록 제공 (무중단 보장)
-    return [
-        {
-            "title": "General availability: Azure Storage support for TLS 1.3",
-            "description": "Azure Storage now provides full GA support for TLS 1.3 to improve security and performance across all storage endpoints.",
-            "link": "https://azure.microsoft.com/en-us/updates/",
-            "pub_date": "Recently Published"
-        },
-        {
-            "title": "Public preview: Multi-region load balancing for Azure Kubernetes Service (AKS)",
-            "description": "Automate cross-region traffic distribution and health failover directly from Azure Kubernetes Service.",
-            "link": "https://azure.microsoft.com/en-us/updates/",
-            "pub_date": "Recently Published"
-        },
-        {
-            "title": "Retirement notice: TLS 1.0 and 1.1 protocol enforcement for Azure App Services",
-            "description": "Starting late 2026, legacy TLS versions will be completely retired across all Azure App Service web apps.",
-            "link": "https://azure.microsoft.com/en-us/updates/",
-            "pub_date": "Recently Published"
-        }
-    ]
+    if not raw_items:
+        raw_items = [
+            {
+                "title": "General availability: Azure Storage support for TLS 1.3",
+                "description": "Azure Storage now provides full GA support for TLS 1.3 to improve security and performance across all storage endpoints.",
+                "link": "https://azure.microsoft.com/en-us/updates/",
+                "pub_date": "Recently Published"
+            },
+            {
+                "title": "Public preview: Multi-region load balancing for Azure Kubernetes Service (AKS)",
+                "description": "Automate cross-region traffic distribution and health failover directly from Azure Kubernetes Service.",
+                "link": "https://azure.microsoft.com/en-us/updates/",
+                "pub_date": "Recently Published"
+            },
+            {
+                "title": "Retirement notice: TLS 1.0 and 1.1 protocol enforcement for Azure App Services",
+                "description": "Starting late 2026, legacy TLS versions will be completely retired across all Azure App Service web apps.",
+                "link": "https://azure.microsoft.com/en-us/updates/",
+                "pub_date": "Recently Published"
+            }
+        ]
+
+    return translate_titles_batch(raw_items, api_key=api_key)
 
 
 # ==============================================================================
