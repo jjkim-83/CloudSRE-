@@ -4,14 +4,14 @@ Project       : Cloud SRE-NEXUS (Autonomous Cloud Operations & Architecture Copi
 File Path     : cloud_sre_nexus/app.py
 File Name     : app.py
 Description   : Streamlit 기반 SRE 에이전트 통합 UI 및 다중 프로바이더 오케스트레이션
-Last Modified : 2026-10-23 14:52:00 KST (Asia/Seoul)
-Version       : v1.3.0 (Google 503 일시혼잡 자동 재시도 및 경량 모델 폴백 적용)
+Last Modified : 2026-10-23 15:05:00 KST (Asia/Seoul)
+Version       : v1.4.0 (Mock UI 업로드/편집, 멀티클라우드 MCP 슬롯, RAG 지식 시각화)
 Author/Owner  : Cloud SRE Team
 =============================================================================
 A unified Streamlit platform integrating:
-- Operations MCP: Loose-coupling via local mock ARM topology or live Azure MCP
-- Learning MCP: Live Microsoft Learn documentation search
-- Third-Party & Internal RAG: Palo Alto NVA, Datadog, Confluent, and compliance policies
+- Operations MCP: Loose-coupling via local mock ARM topology (Web Upload/Edit) or live Azure MCP
+- Learning MCP: Live Microsoft Learn search + AWS/GCP Multi-Cloud MCP Expansion
+- Third-Party & Internal RAG: Palo Alto NVA, Datadog, Confluent, and compliance policies (With UI Previews)
 - Event Trigger & Real-time Dispatcher: Slack & Telegram alerts
 All settings and credentials loaded via centralized config (.env & st.secrets).
 """
@@ -29,37 +29,46 @@ from config import settings
 # 1. 플러그인 구조: 모듈형 프로바이더 아키텍처
 # ==============================================================================
 
+# [프로바이더 1] 운영 인프라 프로바이더 (운영 MCP / Mock ARM JSON 겸용)
 class InfraProvider:
-    def __init__(self, mode: str = None, json_path: str = None, live_endpoint: str = None):
+    def __init__(self, mode: str = None, json_path: str = None, live_endpoint: str = None, in_memory_data: dict = None):
         self.mode = mode or settings.INFRA_SOURCE_TYPE
         self.json_path = json_path or settings.INFRA_JSON_PATH
         self.live_endpoint = live_endpoint or settings.AZURE_MCP_ENDPOINT
-        self.infra_data = {}
-        self.load()
+        self.infra_data = in_memory_data or {}
+        if not self.infra_data:
+            self.load()
 
     def load(self):
-        if self.mode == "mock" and os.path.exists(self.json_path):
-            try:
-                with open(self.json_path, "r", encoding="utf-8") as f:
-                    self.infra_data = json.load(f)
-            except Exception as e:
-                self.infra_data = {"error": f"JSON 로드 실패: {e}"}
+        if self.mode == "mock":
+            if os.path.exists(self.json_path):
+                try:
+                    with open(self.json_path, "r", encoding="utf-8") as f:
+                        self.infra_data = json.load(f)
+                except Exception as e:
+                    self.infra_data = {"error": f"JSON 로드 실패: {e}"}
+            else:
+                self.infra_data = {"warning": f"Mock 파일({self.json_path})을 찾을 수 없습니다."}
         else:
             self.infra_data = {
                 "status": "Live Azure MCP 연결 대기 중",
                 "endpoint": self.live_endpoint,
-                "protocol": "Model Context Protocol (SSE/STDIO)"
+                "protocol": "Model Context Protocol (SSE/STDIO)",
+                "capabilities": ["resource_discovery", "metrics_query", "arm_deployment"]
             }
 
     def get_summary(self) -> str:
         if self.mode == "mock":
             return json.dumps(self.infra_data, ensure_ascii=False, indent=2)
-        return f"[실시간 Azure MCP 연동] 엔드포인트: {self.live_endpoint}"
+        return f"[실시간 Azure MCP 연동]\n• 엔드포인트: {self.live_endpoint}\n• 감지 모드: Live Azure Tenant Infrastructure"
 
 
+# [프로바이더 2] 공식 지식 프로바이더 (학습 MCP: MS Learn + 멀티클라우드 MCP)
 class LearnMCPProvider:
-    def __init__(self, enable_multicloud: bool = None, search_limit: int = None, timeout: int = None):
-        self.enable_multicloud = settings.ENABLE_MULTICLOUD if enable_multicloud is None else enable_multicloud
+    def __init__(self, enable_multicloud: bool = False, aws_endpoint: str = "", gcp_endpoint: str = "", search_limit: int = None, timeout: int = None):
+        self.enable_multicloud = enable_multicloud
+        self.aws_endpoint = aws_endpoint
+        self.gcp_endpoint = gcp_endpoint
         self.search_limit = search_limit or settings.MS_LEARN_SEARCH_LIMIT
         self.timeout = timeout or settings.MS_LEARN_TIMEOUT_SECONDS
 
@@ -81,35 +90,40 @@ class LearnMCPProvider:
             ms_text = f"MS Learn 검색 참조: https://learn.microsoft.com/ko-kr/search/?terms={urllib.parse.quote(query)}"
         
         if self.enable_multicloud:
-            ms_text += "\n\n*(멀티클라우드 모드 활성화됨: AWS/GCP MCP 도구 연동 대기)*"
+            ms_text += f"\n\n🌐 **[멀티클라우드 MCP 통합 연동]**"
+            if self.aws_endpoint:
+                ms_text += f"\n• AWS MCP Server: `{self.aws_endpoint}` (연결 활성화)"
+            if self.gcp_endpoint:
+                ms_text += f"\n• GCP MCP Server: `{self.gcp_endpoint}` (연결 활성화)"
         return ms_text
 
 
+# [프로바이더 3] 서드파티 & 사내 가이드 RAG 프로바이더
 class ThirdPartyRAGProvider:
     def __init__(self, enabled: bool = None):
         self.enabled = settings.ENABLE_THIRD_PARTY_RAG if enabled is None else enabled
         self.kb = [
             {
                 "solution": "Palo Alto VM-Series NVA",
-                "category": "04. 보안, 거버넌스 및 ID",
+                "category": "보안 & 네트워크 라우팅",
                 "title": "Palo Alto 차세대 방화벽 Azure VNet 배포 및 UDR 라우팅 지침",
                 "content": "Palo Alto NVA는 Trust(10.0.1.0/24), Untrust(10.0.0.0/24) 2개 이상의 서브넷에 각각 전용 NIC를 두어야 함. Azure NIC 레벨에서 IP Forwarding(IP 전달)을 반드시 활성화하고, 사내 UDR에서 0.0.0.0/0의 다음 홉(Next Hop)을 NVA Trust 사설 IP로 강제해야 함."
             },
             {
                 "solution": "Datadog Azure Integration",
-                "category": "02. 모니터링, 옵저버빌리티 및 로깅",
+                "category": "옵저버빌리티 & 모니터링",
                 "title": "Datadog을 이용한 Azure 리소스 및 로그 모니터링 아키텍처",
                 "content": "Azure Platform Logs는 직접 전송하지 않고 Azure Event Hubs를 거쳐 Datadog 전달기로 스트리밍해야 대규모 트래픽 병목이 없음. VM 내부 상세 메트릭 수집을 위해선 Datadog Agent를 VM 확장을 통해 자동 배포해야 함."
             },
             {
                 "solution": "Confluent Cloud on Azure",
-                "category": "08. 통합 & 메시징",
+                "category": "메시징 & 데이터 스트리밍",
                 "title": "Confluent Cloud Kafka와 Azure VNet Private Link 보안 연동",
                 "content": "인터넷 공용 엔드포인트 노출을 금지하는 금융/엔터프라이즈 환경에서는 Azure Private Link를 이용해 사설 IP로 카프카 클러스터에 접근해야 하며, privatelink.azure.confluent.cloud 전용 프라이빗 DNS 영역 등록이 필수적임."
             },
             {
                 "solution": "사내 클라우드 보안 거버넌스 규정 (Internal Policy)",
-                "category": "04. 보안, 거버넌스 및 ID",
+                "category": "보안 컴플라이언스",
                 "title": "사내 표준 클라우드 인프라 보안 컴플라이언스 v3.2",
                 "content": "모든 가상 머신(VM)은 관리자 포트(22, 3389)를 공용 인터넷에 절대 직접 노출할 수 없으며 Azure Bastion을 통해서만 접속해야 함. 스토리지 계정은 최소 TLS 1.2 이상(향후 TLS 1.3 전환 준비) 및 프라이빗 엔드포인트 연동이 강제됨."
             }
@@ -123,7 +137,7 @@ class ThirdPartyRAGProvider:
         matched = []
         for item in self.kb:
             if any(term in q for term in [item["solution"].lower(), item["category"].lower(), "palo alto", "방화벽", "datadog", "모니터링", "confluent", "kafka", "카프카", "사내", "규정", "보안", "nva", "서드파티", "tls"]):
-                matched.append(f"📌 [서드파티/사내 RAG] **{item['title']}**\n- 솔루션: {item['solution']}\n- 내용: {item['content']}")
+                matched.append(f"📌 [서드파티/사내 RAG] **{item['title']}**\n- 솔루션: {item['solution']}\n- 분류: {item['category']}\n- 내용: {item['content']}")
 
         return "\n\n".join(matched) if matched else "일치하는 서드파티 RAG 문서가 없습니다."
 
@@ -161,14 +175,13 @@ def send_telegram(bot_token: str, chat_id: str, text: str) -> bool:
 
 
 # ==============================================================================
-# 3. LLM 오케스트레이션 헬퍼 (503 일시혼잡 자동 재시도 및 다중 모델 폴백)
+# 3. LLM 오케스트레이션 헬퍼 (503 혼잡 자동 재시도 및 다중 모델 폴백)
 # ==============================================================================
 def call_gemini(api_key: str, system_prompt: str, user_prompt: str, preferred_model: str = None) -> str:
     active_key = str(api_key or settings.GEMINI_API_KEY).strip()
     if not active_key:
         return "⚠️ Secrets 또는 사이드바에 유효한 Gemini API Key를 입력해주세요."
     
-    # 503 혼잡 시 순차적으로 자동 우회할 최신 활성 모델 목록
     primary = (preferred_model or settings.GEMINI_MODEL or "gemini-3.8-flash").strip()
     candidate_models = [
         primary,
@@ -192,7 +205,6 @@ def call_gemini(api_key: str, system_prompt: str, user_prompt: str, preferred_mo
     for model in models_to_try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={active_key}"
         
-        # 503(서버 혼잡) 발생 시 1.5초 대기 후 1회 즉시 재시도
         for attempt in range(2):
             try:
                 req = urllib.request.Request(
@@ -214,14 +226,12 @@ def call_gemini(api_key: str, system_prompt: str, user_prompt: str, preferred_mo
                 except Exception:
                     detail_msg = str(e)
                 
-                # 503 일시혼잡: 1회차면 1.5초 대기 후 재시도
                 if e.code == 503 and attempt == 0:
                     time.sleep(1.5)
                     continue
                 
                 last_error_details.append(f"• {model} (HTTP {e.code}): {detail_msg}")
                 
-                # 404(모델 미지원) 또는 503(재시도 실패)이면 다음 후보 모델로 우회
                 if e.code in (404, 503):
                     break
                 elif e.code in (400, 403):
@@ -242,9 +252,20 @@ st.set_page_config(
     layout="wide"
 )
 
+# 세션 상태 초기화 (커스텀 인프라 JSON 보존)
+if "mock_infra_data" not in st.session_state:
+    try:
+        with open(settings.INFRA_JSON_PATH, "r", encoding="utf-8") as f:
+            st.session_state["mock_infra_data"] = json.load(f)
+    except Exception:
+        st.session_state["mock_infra_data"] = {
+            "virtual_networks": [{"name": "vnet-prod-kr", "address_space": "10.0.0.0/16"}]
+        }
+
 st.sidebar.title(f"⚙️ {settings.PROJECT_NAME}")
 st.sidebar.caption("중앙 환경 변수 & Secrets 연동 상태")
 
+# --- 0. API 설정 ---
 api_key = st.sidebar.text_input(
     "Gemini API Key (무료)",
     value=settings.GEMINI_API_KEY,
@@ -272,7 +293,8 @@ selected_model = st.sidebar.selectbox(
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔌 프로바이더 연결 설정")
 
-infra_options = ["Mock 모드 (my_infra.json)", "Live Azure MCP Server (실시간)"]
+# --- 1. 운영 인프라 프로바이더 설정 ---
+infra_options = ["Mock 모드 (가상 JSON 토폴로지)", "Live Azure MCP Server (실시간 연동)"]
 default_idx = 0 if settings.INFRA_SOURCE_TYPE == "mock" else 1
 infra_mode = st.sidebar.radio("1. 운영 인프라 MCP 모드", infra_options, index=default_idx)
 
@@ -280,29 +302,71 @@ live_endpoint = settings.AZURE_MCP_ENDPOINT
 if "Live" in infra_mode:
     live_endpoint = st.sidebar.text_input(
         "Azure MCP 엔드포인트 URL",
-        value=settings.AZURE_MCP_ENDPOINT,
-        help="MCP Server SSE 엔드포인트 주소"
+        value=settings.AZURE_MCP_ENDPOINT or "http://localhost:8000/sse",
+        help="기본 포트: 8000 (Model Context Protocol SSE/STDIO 서버)"
     )
+    infra_provider = InfraProvider(mode="live", live_endpoint=live_endpoint)
+else:
+    # Mock 모드: 웹에서 직접 업로드 및 에디터로 수정 가능
+    with st.sidebar.expander("🛠️ 인프라 JSON 업로드 / 화면 직접 편집", expanded=False):
+        uploaded_file = st.file_uploader("인프라 JSON 파일 업로드", type=["json"])
+        if uploaded_file is not None:
+            try:
+                st.session_state["mock_infra_data"] = json.load(uploaded_file)
+                st.success("새로운 인프라 JSON 파일이 메모리에 로드되었습니다!")
+            except Exception as e:
+                st.error(f"JSON 파싱 실패: {e}")
+        
+        # 텍스트 에디터에서 직접 수정
+        current_json_str = json.dumps(st.session_state["mock_infra_data"], ensure_ascii=False, indent=2)
+        edited_json = st.text_area("인프라 스펙 직접 편집", value=current_json_str, height=220)
+        if st.button("💾 편집 내용 인프라에 즉시 반영"):
+            try:
+                st.session_state["mock_infra_data"] = json.loads(edited_json)
+                st.success("인프라 변경사항이 즉시 반영되었습니다!")
+            except Exception as e:
+                st.error(f"JSON 형식 오류: {e}")
 
-infra_provider = InfraProvider(
-    mode="mock" if "Mock" in infra_mode else "live",
-    json_path=settings.INFRA_JSON_PATH,
-    live_endpoint=live_endpoint
-)
+    infra_provider = InfraProvider(mode="mock", in_memory_data=st.session_state["mock_infra_data"])
 
+# --- 2. 학습 MCP & 멀티클라우드 확장 ---
+st.markdown("---")
 enable_multi = st.sidebar.checkbox(
-    "2. 멀티클라우드 MCP 확장 (AWS/GCP)",
-    value=settings.ENABLE_MULTICLOUD
+    "2. 멀티클라우드 MCP 확장 (AWS / GCP)",
+    value=settings.ENABLE_MULTICLOUD,
+    help="AWS 및 GCP 공식 MCP 서버 엔드포인트를 추가로 연동합니다."
 )
-learn_mcp = LearnMCPProvider(enable_multicloud=enable_multi)
 
+aws_endpoint = ""
+gcp_endpoint = ""
+if enable_multi:
+    with st.sidebar.expander("🌐 멀티클라우드 MCP 서버 주소 설정", expanded=True):
+        aws_endpoint = st.text_input("AWS MCP 엔드포인트 URL", value=settings.AWS_MCP_ENDPOINT or "http://localhost:8001/sse")
+        gcp_endpoint = st.text_input("GCP MCP 엔드포인트 URL", value=settings.GCP_MCP_ENDPOINT or "http://localhost:8002/sse")
+
+learn_mcp = LearnMCPProvider(
+    enable_multicloud=enable_multi,
+    aws_endpoint=aws_endpoint,
+    gcp_endpoint=gcp_endpoint
+)
+
+# --- 3. 서드파티 RAG 프로바이더 설정 ---
+st.markdown("---")
 enable_rag = st.sidebar.checkbox(
     "3. 서드파티 & 사내 가이드 RAG 활성화",
     value=settings.ENABLE_THIRD_PARTY_RAG,
-    help="Palo Alto, Datadog, Confluent, 사내 보안 규정 등 검색"
+    help="Palo Alto, Datadog, Confluent 및 사내 보안 규정 지식베이스 교차 검증"
 )
+
 rag_provider = ThirdPartyRAGProvider(enabled=enable_rag)
 
+if enable_rag:
+    with st.sidebar.expander("📚 참조 대상 서드파티 지식베이스 (4건)", expanded=False):
+        for item in rag_provider.kb:
+            st.markdown(f"**• {item['solution']}** ({item['category']})")
+            st.caption(f"_{item['title']}_")
+
+# --- 4. 알림 채널 설정 ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("📢 알림 채널 연동 (.env / Secrets)")
 slack_url = st.sidebar.text_input("Slack Webhook URL", value=settings.SLACK_WEBHOOK_URL, placeholder="https://hooks.slack.com/...")
@@ -318,8 +382,11 @@ if st.sidebar.button("🔔 알림 테스트"):
     if not s_ok and not t_ok:
         st.sidebar.warning("알림 설정을 확인하세요 (.env, Secrets 또는 사이드바 입력창).")
 
+# ==============================================================================
+# 메인 화면 레이아웃
+# ==============================================================================
 st.title(f"☁️ {settings.PROJECT_NAME}")
-st.caption("운영 MCP (내 인프라) + 학습 MCP (MS Learn) + 서드파티 RAG (Palo Alto, Datadog 등) + 이벤트 트리거 & 알림 전파")
+st.caption("운영 MCP (내 인프라) + 학습 MCP (MS Learn + 멀티클라우드) + 서드파티 RAG (Palo Alto, Datadog 등) + 실시간 런북 전파")
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "💬 인프라 & 서드파티 AI 질의응답 (User Chat)",
@@ -446,9 +513,11 @@ with tab3:
     col_a, col_b = st.columns(2)
     with col_a:
         st.write("**1. 운영 인프라 프로바이더 (운영 MCP / JSON)**")
+        st.caption("현재 적용 중인 인프라 토폴로지 (사이드바에서 업로드 및 실시간 편집 가능)")
         st.json(infra_provider.infra_data)
     with col_b:
         st.write("**2. 서드파티 & 사내 가이드 RAG 지식베이스**")
+        st.caption("사내 보안 규정 및 서드파티 NVA/모니터링 아키텍처 규칙")
         st.json(rag_provider.kb)
 
 # ------------------------------------------------------------------------------
