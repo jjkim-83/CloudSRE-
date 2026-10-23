@@ -3,15 +3,16 @@
 Project       : Cloud SRE-NEXUS (Autonomous Cloud Operations & Architecture Copilot)
 File Path     : cloud_sre_nexus/app.py
 File Name     : app.py
-Description   : Streamlit 기반 SRE 에이전트 통합 UI 및 다중 프로바이더 오케스트레이션
-Last Modified : 2026-10-23 15:30:00 KST (Asia/Seoul)
-Version       : v1.5.0 (RAG 1단계 동적 PDF/TXT 문서 인덱싱 및 가이드 탑재)
+Description   : Streamlit 기반 SRE 에이전트 통합 UI 및 실시간 Azure RSS / 다중 프로바이더 오케스트레이션
+Last Modified : 2026-10-23 15:55:00 KST (Asia/Seoul)
+Version       : v1.6.0 (실시간 Azure Updates RSS 연동 및 RAG/MCP 통합 업그레이드)
 Author/Owner  : Cloud SRE Team
 =============================================================================
 A unified Streamlit platform integrating:
 - Operations MCP: Loose-coupling via local mock ARM topology (Web Upload/Edit) or live Azure MCP
 - Learning MCP: Live Microsoft Learn search + AWS/GCP Multi-Cloud MCP Expansion
 - Third-Party & Internal RAG: Built-in 4 solutions + Dynamic PDF/TXT/MD document uploader & parser
+- Live Event Monitor: Live Azure Updates RSS Feed ingestion & automated SRE impact analysis
 - Event Trigger & Real-time Dispatcher: Slack & Telegram alerts
 All settings and credentials loaded via centralized config (.env & st.secrets).
 """
@@ -23,6 +24,7 @@ import time
 import urllib.request
 import urllib.parse
 import urllib.error
+import xml.etree.ElementTree as ET
 import streamlit as st
 from config import settings
 
@@ -32,6 +34,43 @@ try:
     PYPDF_AVAILABLE = True
 except ImportError:
     PYPDF_AVAILABLE = False
+
+# ==============================================================================
+# 0. 실시간 Azure Updates RSS 피드 수집기 (In-App 캐싱)
+# ==============================================================================
+@st.cache_data(ttl=1800)  # 30분 캐시 (트래픽 최적화)
+def fetch_azure_rss_updates(limit: int = 10):
+    """Azure 공식 Updates RSS 피드를 비동기 파싱하여 최신 공지 리스트 반환"""
+    rss_url = "https://azurecomcdn.azureedge.net/en-us/updates/feed/"
+    req = urllib.request.Request(
+        rss_url,
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) CloudSRE-Nexus/1.6"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            xml_data = resp.read()
+            root = ET.fromstring(xml_data)
+            updates = []
+            for item in root.findall("./channel/item")[:limit]:
+                title = item.findtext("title", default="제목 없음").strip()
+                description = item.findtext("description", default="").strip()
+                link = item.findtext("link", default="").strip()
+                pub_date = item.findtext("pubDate", default="").strip()
+                
+                clean_desc = description.replace("<p>", "").replace("</p>", "\n").replace("<br/>", "\n").replace("<br>", "\n")
+                if len(clean_desc) > 300:
+                    clean_desc = clean_desc[:300] + "..."
+
+                updates.append({
+                    "title": title,
+                    "description": clean_desc,
+                    "link": link,
+                    "pub_date": pub_date
+                })
+            return updates
+    except Exception as e:
+        return []
+
 
 # ==============================================================================
 # 1. 플러그인 구조: 모듈형 프로바이더 아키텍처
@@ -111,7 +150,6 @@ class ThirdPartyRAGProvider:
     def __init__(self, enabled: bool = None, custom_docs: list = None):
         self.enabled = settings.ENABLE_THIRD_PARTY_RAG if enabled is None else enabled
         
-        # 기본 내장 서드파티 및 사내 보안 규정 지식베이스 (4종)
         self.base_kb = [
             {
                 "solution": "Palo Alto VM-Series NVA",
@@ -139,7 +177,6 @@ class ThirdPartyRAGProvider:
             }
         ]
         
-        # 사용자가 업로드한 커스텀 문서 병합
         self.kb = list(self.base_kb)
         if custom_docs:
             self.kb.extend(custom_docs)
@@ -453,11 +490,11 @@ if st.sidebar.button("🔔 알림 테스트"):
 # 메인 화면 레이아웃
 # ==============================================================================
 st.title(f"☁️ {settings.PROJECT_NAME}")
-st.caption("운영 MCP (내 인프라) + 학습 MCP (MS Learn + 멀티클라우드) + 서드파티 RAG (사내 규정/매뉴얼 동적 연동) + 실시간 런북 전파")
+st.caption("운영 MCP (내 인프라) + 학습 MCP (MS Learn + 멀티클라우드) + 서드파티 RAG (사내 규정/매뉴얼 동적 연동) + 실시간 RSS 런북 전파")
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "💬 인프라 & 서드파티 AI 질의응답 (User Chat)",
-    "⚡ 이벤트 분석 & 알림 전파 (SRE Report)",
+    "⚡ 실시간 이벤트 & SRE 런북 (Live RSS / Report)",
     "🧩 데이터 소스 모니터 (MCP & RAG 상태)",
     "📖 시스템 아키텍처 & RAG 가이드",
     "🔗 Google Apps Script 웹훅 연동"
@@ -511,32 +548,69 @@ with tab1:
                 st.markdown(f"**[서드파티 RAG]**\n{rag_context}")
 
 # ------------------------------------------------------------------------------
-# TAB 2: Event Analysis & Notification
+# TAB 2: Live RSS Event Analysis & SRE Runbook
 # ------------------------------------------------------------------------------
 with tab2:
     st.subheader("이벤트 감지 ➔ 인프라 & 서드파티 영향도 평가 ➔ 실시간 알림 전파")
-    event_type = st.selectbox(
-        "테스트할 클라우드 이벤트 선택:",
-        [
-            "1. [신규 기능] Azure Storage TLS 1.3 강제 적용 및 TLS 1.2 폐지 예고 (Azure Updates RSS)",
-            "2. [서드파티 연동] 사내 보안 지침에 따라 Palo Alto NVA를 snet-web 서브넷 전면에 배치 (내부 컴플라이언스)",
-            "3. [유지보수] Korea Central 가상 머신 호스트 OS 긴급 보안 패치 및 리부팅 (Service Health)",
-            "4. [장애 경보] Korea Central 가용 영역 1번 스토리지 및 네트워크 I/O 지연 발생 (Monitor Alert)"
-        ]
+    
+    event_source_mode = st.radio(
+        "이벤트 소스 선택:",
+        ["📡 실시간 Azure Updates RSS 피드 자동 수집 (Live)", "🧪 SRE 시뮬레이션 시나리오 (테스트용)"],
+        horizontal=True
     )
+    
+    event_title = ""
+    event_details = ""
+    event_link = ""
 
-    if st.button("⚡ 종합 영향도 분석 실행"):
+    if "Live" in event_source_mode:
+        col_rss_btn, col_rss_info = st.columns([1, 4])
+        with col_rss_btn:
+            if st.button("🔄 RSS 새로고침"):
+                fetch_azure_rss_updates.clear()
+                st.rerun()
+        
+        rss_items = fetch_azure_rss_updates(limit=8)
+        if rss_items:
+            rss_options = [f"[{item['pub_date'][:16]}] {item['title']}" for item in rss_items]
+            selected_idx = st.selectbox("최신 Azure Updates RSS 공지 선택:", range(len(rss_options)), format_func=lambda x: rss_options[x])
+            selected_item = rss_items[selected_idx]
+            event_title = selected_item["title"]
+            event_details = f"발행일: {selected_item['pub_date']}\n내용 요약: {selected_item['description']}"
+            event_link = selected_item["link"]
+            
+            st.info(f"🔗 **Azure 공식 원문 링크**: [{event_link}]({event_link})\n\n📄 **내용 미리보기**: {selected_item['description']}")
+        else:
+            st.warning("Azure RSS 피드를 가져오지 못했습니다. 잠시 후 다시 시도하거나 시뮬레이션 모드를 사용하세요.")
+            event_title = "Azure Storage TLS 1.3 강제화 및 TLS 1.2 지원 중단 예고"
+            event_details = "Azure Storage 서비스 전체에서 TLS 1.2 프로토콜 지원이 공식 중단되고 TLS 1.3 최소 버전이 강제 적용됨."
+    else:
+        sim_choice = st.selectbox(
+            "테스트할 클라우드 이벤트 선택:",
+            [
+                "1. [신규 기능] Azure Storage TLS 1.3 강제 적용 및 TLS 1.2 폐지 예고 (Azure Updates RSS)",
+                "2. [서드파티 연동] 사내 보안 지침에 따라 Palo Alto NVA를 snet-web 서브넷 전면에 배치 (내부 컴플라이언스)",
+                "3. [유지보수] Korea Central 가상 머신 호스트 OS 긴급 보안 패치 및 리부팅 (Service Health)",
+                "4. [장애 경보] Korea Central 가용 영역 1번 스토리지 및 네트워크 I/O 지연 발생 (Monitor Alert)"
+            ]
+        )
+        event_title = sim_choice
+        event_details = f"시뮬레이션 인프라 긴급 대응 시나리오: {sim_choice}"
+
+    if st.button("⚡ 종합 영향도 분석 & 런북 생성", use_container_width=True):
         with st.spinner(f"인프라 토폴로지, 공식 스펙, 서드파티 가이드 종합 분석 중 ({selected_model})..."):
             infra_context = infra_provider.get_summary()
-            learn_context = learn_mcp.search(event_type)
-            rag_context = rag_provider.search(event_type)
+            learn_context = learn_mcp.search(event_title)
+            rag_context = rag_provider.search(event_title)
 
             sys_prompt = f"""
 당신은 엔터프라이즈 Cloud SRE 긴급 대응 에이전트 ({settings.PROJECT_NAME})입니다.
 수신된 이벤트에 대해 운영 인프라와 서드파티 연동 환경에 미치는 영향도를 분석하고 보고서를 작성하세요.
 
-[이벤트]
-{event_type}
+[이벤트 정보]
+• 제목: {event_title}
+• 세부내용: {event_details}
+• 원문출처: {event_link or '시뮬레이션 이벤트'}
 
 [운영 인프라]
 {infra_context}
@@ -548,73 +622,4 @@ with tab2:
 {rag_context}
 
 보고서 필수 양식:
-# 🚨 [{settings.PROJECT_NAME} 종합 영향도 분석 보고서]
-1. **이벤트 요약**: 어떤 변경/장애가 발생했는가?
-2. **영향받는 리소스 및 서드파티 솔루션**: 영향 리소스 및 위험 등급
-3. **위험 요인 및 장애 여파(Blast Radius)**: 사내 규정 위배 여부 및 서비스 중단 가능성
-4. **단계별 대응 런북(Runbook)**: 실제 실행할 구체적인 명령어 및 조치 플랜
-"""
-            report = call_gemini(api_key, sys_prompt, "종합 보고서를 작성해줘.", preferred_model=selected_model)
-            st.session_state["full_report"] = report
-
-    if "full_report" in st.session_state:
-        st.markdown(st.session_state["full_report"])
-        st.markdown("---")
-        st.write("📢 **생성된 종합 보고서를 메신저 채널로 전송:**")
-        col_s, col_t = st.columns(2)
-        with col_s:
-            if st.button("📢 Slack 채널로 보고서 발송"):
-                ok = send_slack(slack_url, st.session_state["full_report"])
-                if ok: st.success("Slack 전송 완료!")
-                else: st.error("Slack 설정을 확인하세요.")
-        with col_t:
-            if st.button("📢 Telegram 채널로 보고서 발송"):
-                ok = send_telegram(tg_token, tg_chat_id, st.session_state["full_report"])
-                if ok: st.success("Telegram 전송 완료!")
-                else: st.error("Telegram 설정을 확인하세요.")
-
-# ------------------------------------------------------------------------------
-# TAB 3: Data Source Status
-# ------------------------------------------------------------------------------
-with tab3:
-    st.subheader("연동된 데이터 소스 및 프로바이더 현황")
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.write("**1. 운영 인프라 프로바이더 (운영 MCP / JSON)**")
-        st.caption("현재 적용 중인 인프라 토폴로지 (사이드바에서 업로드 및 실시간 편집 가능)")
-        st.json(infra_provider.infra_data)
-    with col_b:
-        st.write(f"**2. 서드파티 & 사내 가이드 RAG 지식베이스 (총 {len(rag_provider.kb)}건)**")
-        st.caption("사내 보안 규정, 서드파티 NVA/모니터링 규칙 및 사용자 업로드 PDF/TXT")
-        st.json(rag_provider.kb)
-
-# ------------------------------------------------------------------------------
-# TAB 4: Architecture & RAG Guide
-# ------------------------------------------------------------------------------
-with tab4:
-    st.subheader("💡 Cloud SRE-NEXUS 전체 아키텍처 및 RAG 가이드")
-    st.markdown("""
-### 1. 왜 Microsoft 공식 문서 외에 '서드파티 RAG'가 필수적인가요?
-* **MS Learn 공식 문서(학습 MCP)**는 Azure 자체의 표준 기능과 일반적인 설정법만 알려줍니다.
-* 하지만 실제 기업 클라우드 환경에서는 **Palo Alto 차세대 방화벽(NVA), Datadog 모니터링, Confluent Kafka**, 그리고 **"관리자 포트 인터넷 직접 오픈 금지", "TLS 1.2 강제" 같은 사내 보안 규정**이 얽혀 있습니다.
-* 마이크로소프트 공식 문서는 사내 보안 규정이나 서드파티 솔루션과의 라우팅 충돌을 알지 못하므로, **서드파티 RAG를 통해 사내 정책과 연동 매뉴얼을 함께 주입해야만 '사내 인프라 맞춤형' 진단**이 가능합니다.
-
----
-
-### 2. RAG(검색 증강 생성) 동작 3단계 원리
-1. **문서 수집 (Ingestion)**: 사이드바의 파일 업로더를 통해 사내 보안 규정 PDF나 매뉴얼을 등록합니다 (`pypdf` 자동 텍스트 추출).
-2. **지식 결합 (Fusion)**: 사용자가 질문하거나 인프라 이벤트가 발생하면 다음 3가지 소스를 융합합니다:
-   - ① **운영 MCP**: 현재 내 인프라 자원 목록 (서브넷, VM 스펙, NSG)
-   - ② **학습 MCP**: Microsoft Learn 공식 기술 문서
-   - ③ **서드파티 RAG**: 사내 보안 규정 + 서드파티 연동 지침
-3. **교차 검증 (Reasoning)**: Gemini AI가 3가지 지식을 대조하여 **"사내 규정을 위배하지 않으면서 서드파티 솔루션을 올바르게 연결하는 런북"**을 생성합니다.
-""")
-
-# ------------------------------------------------------------------------------
-# TAB 5: Google Apps Script Webhook
-# ------------------------------------------------------------------------------
-with tab5:
-    st.subheader("Google Apps Script ➔ 본 통합 시스템 연동 안내")
-    st.markdown(f"설정된 웹훅 URL: `{settings.GAS_WEBHOOK_URL}`")
-    st.info("💡 Streamlit은 웹 화면용 서버이므로, Google Apps Script에서는 슬랙/메신저로 알림을 쏘며 아래 주소를 클릭하도록 링크를 전달하는 방식을 권장합니다.")
-    st.code("https://ebfsrxrsmffy9g8ynyrfvj.streamlit.app", language="text")
+# 🚨 [{settings.PROJECT_NAME} 종합 영향도 분석 보고
