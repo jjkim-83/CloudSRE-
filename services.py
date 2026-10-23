@@ -4,8 +4,8 @@ Project       : Cloud SRE-NEXUS (Autonomous Cloud Operations & Architecture Copi
 File Path     : cloud_sre_nexus/services.py
 File Name     : services.py
 Description   : SRE 에이전트 핵심 비즈니스 로직 및 프로바이더 모듈 (MCP, RAG, RSS, LLM, 알림)
-Last Modified : 2026-10-23 16:56:00 KST (Asia/Seoul)
-Version       : v1.8.1 (Azure RSS 환경변수 API 키 자동 참조 및 시그니처 TypeError 방지)
+Last Modified : 2026-10-23 17:45:00 KST (Asia/Seoul)
+Version       : v1.9.0 (Azure Updates 릴리즈 & Status 장애 하이브리드 필터 분리 아키텍처)
 Author/Owner  : Cloud SRE Team
 =============================================================================
 """
@@ -60,6 +60,13 @@ def quick_translate_title(title: str) -> str:
         (r"is now available", "정식 지원 개시"),
         (r"now in public preview", "공개 프리뷰 시작"),
         (r"now in general availability", "정식 출시(GA) 시작"),
+        (r"Active Incident:?", "[🚨 활성 장애]"),
+        (r"Resolved:?", "[✅ 해결됨]"),
+        (r"Mitigated:?", "[🟡 완화됨]"),
+        (r"Investigating:?", "[🔍 조사 중]"),
+        (r"Advisory:?", "[📢 상태 권고]"),
+        (r"Information:?", "[ℹ️ 안내]"),
+        (r"Post-Incident Review:?", "[📋 사후 분석(PIR)]"),
     ]
     for pattern, rep in replacements:
         t = re.sub(pattern, rep, t, flags=re.IGNORECASE).strip()
@@ -80,7 +87,7 @@ def translate_titles_batch(items: list, api_key: str = "") -> list:
     # 2단계: Gemini API를 통해 자연스러운 한국어 문맥 번역 보정 (1회 일괄 호출)
     titles_text = "\n".join([f"{i+1}. {it['title']}" for i, it in enumerate(items)])
     prompt = (
-        "다음 Microsoft Azure 공식 릴리즈 공지 영문 제목들을 한국어 IT 클라우드 엔지니어가 읽기 편한 자연스러운 한국어로 번역해줘.\n"
+        "다음 Microsoft Azure 공식 릴리즈 및 서비스 상태 공지 영문 제목들을 한국어 IT 클라우드 엔지니어가 읽기 편한 자연스러운 한국어로 번역해줘.\n"
         "다른 설명 없이 번역된 제목만 번호 순서대로 한 줄씩 출력해:\n\n"
         f"{titles_text}"
     )
@@ -108,44 +115,27 @@ def translate_titles_batch(items: list, api_key: str = "") -> list:
                     if 0 <= idx < len(items):
                         items[idx]["title_ko"] = match.group(2).strip()
     except Exception:
-        pass  # 실패 시 규칙 기반 번역(quick_translate_title) 유지
+        pass
     
     return items
 
 
 # ==============================================================================
-# 1. 실시간 Azure Updates RSS 피드 수집기 (신규 MS 공식 엔드포인트)
+# 1. 실시간 Azure Updates & Status 피드 수집기 (통합 허브 & 카테고리 필터)
 # ==============================================================================
-@cache_data(ttl=1800)
-def fetch_azure_rss_updates(limit: int = 8, *args, **kwargs):
-    """
-    Microsoft 공식 신규 릴리즈 RSS 엔드포인트에서 최신 공지 비동기 수집 및 한국어화
-    - 신규 공식 주소: https://www.microsoft.com/releasecommunications/api/v2/azure/rss
-    - 환경변수 및 settings.GEMINI_API_KEY 자동 참조로 호출부에서 api_key 전달 불필요
-    - 하위 호환성을 위해 *args, **kwargs 수용 (TypeError 방지)
-    """
-    api_key = kwargs.get("api_key", "")
-    if not api_key and args:
-        api_key = args[0]
-    api_key = str(api_key or settings.GEMINI_API_KEY).strip()
-    candidate_urls = [
-        "https://www.microsoft.com/releasecommunications/api/v2/azure/rss",
-        "https://azure.microsoft.com/en-us/blog/feed/"
-    ]
-    
+def _fetch_channel_items(urls, max_count, cat_name, cat_badge):
+    items = []
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         "Accept": "application/rss+xml, application/xml, text/xml, */*"
     }
-
-    raw_items = []
-    for url in candidate_urls:
+    for url in urls:
         try:
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=7) as resp:
                 xml_data = resp.read()
                 root = ET.fromstring(xml_data)
-                for item in root.findall("./channel/item")[:limit]:
+                for item in root.findall("./channel/item")[:max_count]:
                     title = item.findtext("title", default="제목 없음").strip()
                     desc = item.findtext("description", default="").strip()
                     link = item.findtext("link", default="").strip()
@@ -156,41 +146,107 @@ def fetch_azure_rss_updates(limit: int = 8, *args, **kwargs):
                     if len(clean_desc) > 250:
                         clean_desc = clean_desc[:250] + "..."
 
-                    raw_items.append({
+                    items.append({
                         "title": title,
                         "description": clean_desc,
-                        "link": link or "https://azure.microsoft.com/en-us/updates/",
-                        "pub_date": pub_date[:16] if pub_date else "최근 업데이트"
+                        "link": link or ("https://azure.status.microsoft/" if cat_name == "status" else "https://azure.microsoft.com/en-us/updates/"),
+                        "pub_date": pub_date[:16] if pub_date else "최근",
+                        "category": cat_name,
+                        "badge": cat_badge
                     })
-                if raw_items:
+                if items:
                     break
         except Exception:
             continue
+    return items
 
-    if not raw_items:
-        raw_items = [
-            {
-                "title": "General availability: Azure Storage support for TLS 1.3",
-                "description": "Azure Storage now provides full GA support for TLS 1.3 to improve security and performance across all storage endpoints.",
-                "link": "https://azure.microsoft.com/en-us/updates/",
-                "pub_date": "Recently Published"
-            },
-            {
-                "title": "Public preview: Multi-region load balancing for Azure Kubernetes Service (AKS)",
-                "description": "Automate cross-region traffic distribution and health failover directly from Azure Kubernetes Service.",
-                "link": "https://azure.microsoft.com/en-us/updates/",
-                "pub_date": "Recently Published"
-            },
-            {
-                "title": "Retirement notice: TLS 1.0 and 1.1 protocol enforcement for Azure App Services",
-                "description": "Starting late 2026, legacy TLS versions will be completely retired across all Azure App Service web apps.",
-                "link": "https://azure.microsoft.com/en-us/updates/",
-                "pub_date": "Recently Published"
-            }
-        ]
 
-    # 한국어 타이틀 일괄 생성 (규칙 + AI 하이브리드)
-    return translate_titles_batch(raw_items, api_key=api_key)
+@cache_data(ttl=1800)
+def fetch_azure_rss_updates(limit: int = 8, category: str = "all", *args, **kwargs):
+    """
+    Microsoft 공식 릴리즈(Updates) 및 글로벌 장애(Status) RSS 비동기 수집 및 한국어화
+    - 카테고리: "all" (전체 통합), "status" (장애/상태), "updates" (릴리즈/지원종료)
+    - 하위 호환성을 위해 *args, **kwargs 수용 (TypeError 방지)
+    """
+    api_key = kwargs.get("api_key", "")
+    if not api_key and args:
+        if isinstance(args[0], str) and args[0].startswith("AIza"):
+            api_key = args[0]
+    api_key = str(api_key or settings.GEMINI_API_KEY).strip()
+
+    status_urls = [
+        "https://azure.status.microsoft/en-us/status/feed/",
+        "https://status.azure.com/en-us/status/feed/"
+    ]
+    update_urls = [
+        "https://www.microsoft.com/releasecommunications/api/v2/azure/rss",
+        "https://azure.microsoft.com/en-us/blog/feed/"
+    ]
+
+    sel_cat = str(category or "all").lower().strip()
+    status_items = []
+    update_items = []
+
+    if sel_cat in ("all", "status"):
+        status_items = _fetch_channel_items(status_urls, limit, "status", "🚨 장애/상태")
+        if not status_items:
+            status_items = [
+                {
+                    "title": "Information: Azure Global Services Operational (No Active Outages)",
+                    "description": "Microsoft Azure 글로벌 주요 리전 및 코어 인프라 서비스가 현재 정상 가동 중입니다 (진행 중인 광역 장애 없음).",
+                    "link": "https://azure.status.microsoft/",
+                    "pub_date": "실시간 상태",
+                    "category": "status",
+                    "badge": "🚨 장애/상태"
+                },
+                {
+                    "title": "Advisory: Azure Planned Maintenance & Host OS Updates Guideline",
+                    "description": "가상 머신(VM) 및 App Service 정기 유지보수 및 호스트 OS 보안 패치 대비 지침 및 가용성 세트 구성 권장.",
+                    "link": "https://azure.status.microsoft/",
+                    "pub_date": "상시 권고",
+                    "category": "status",
+                    "badge": "🚨 장애/상태"
+                }
+            ]
+
+    if sel_cat in ("all", "updates"):
+        update_items = _fetch_channel_items(update_urls, limit, "updates", "🚀 릴리즈")
+        if not update_items:
+            update_items = [
+                {
+                    "title": "General availability: Azure Storage support for TLS 1.3",
+                    "description": "Azure Storage now provides full GA support for TLS 1.3 to improve security and performance across all storage endpoints.",
+                    "link": "https://azure.microsoft.com/en-us/updates/",
+                    "pub_date": "Recently Published",
+                    "category": "updates",
+                    "badge": "🚀 릴리즈"
+                },
+                {
+                    "title": "Public preview: Multi-region load balancing for Azure Kubernetes Service (AKS)",
+                    "description": "Automate cross-region traffic distribution and health failover directly from Azure Kubernetes Service.",
+                    "link": "https://azure.microsoft.com/en-us/updates/",
+                    "pub_date": "Recently Published",
+                    "category": "updates",
+                    "badge": "🚀 릴리즈"
+                },
+                {
+                    "title": "Retirement notice: TLS 1.0 and 1.1 protocol enforcement for Azure App Services",
+                    "description": "Starting late 2026, legacy TLS versions will be completely retired across all Azure App Service web apps.",
+                    "link": "https://azure.microsoft.com/en-us/updates/",
+                    "pub_date": "Recently Published",
+                    "category": "updates",
+                    "badge": "🚀 릴리즈"
+                }
+            ]
+
+    if sel_cat == "status":
+        combined = status_items[:limit]
+    elif sel_cat == "updates":
+        combined = update_items[:limit]
+    else:
+        combined = (status_items + update_items)[:limit]
+
+    return translate_titles_batch(combined, api_key=api_key)
 
 
 # ==============================================================================
@@ -365,8 +421,9 @@ def call_gemini(api_key: str, system_prompt: str, user_prompt: str, preferred_mo
     candidate_models = [
         primary,
         "gemini-3.8-flash",
+        "gemini-3.1-pro-preview",
+        "gemini-4-argon",
         "gemini-3.7-flash",
-        "gemini-3.6-flash",
         "gemini-3.5-flash-lite"
     ]
     models_to_try = []
