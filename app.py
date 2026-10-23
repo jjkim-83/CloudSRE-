@@ -622,4 +622,73 @@ with tab2:
 {rag_context}
 
 보고서 필수 양식:
-# 🚨 [{settings.PROJECT_NAME} 종합 영향도 분석 보고
+# 🚨 [{settings.PROJECT_NAME} 종합 영향도 분석 보고서]
+1. **이벤트 요약**: 어떤 변경/장애가 발생했는가?
+2. **영향받는 리소스 및 서드파티 솔루션**: 영향 리소스 및 위험 등급
+3. **위험 요인 및 장애 여파(Blast Radius)**: 사내 규정 위배 여부 및 서비스 중단 가능성
+4. **단계별 대응 런북(Runbook)**: 실제 실행할 구체적인 명령어 및 조치 플랜
+"""
+            report = call_gemini(api_key, sys_prompt, "종합 보고서를 작성해줘.", preferred_model=selected_model)
+            st.session_state["full_report"] = report
+
+    if "full_report" in st.session_state:
+        st.markdown(st.session_state["full_report"])
+        st.markdown("---")
+        st.write("📢 **생성된 종합 보고서를 메신저 채널로 전송:**")
+        col_s, col_t = st.columns(2)
+        with col_s:
+            if st.button("📢 Slack 채널로 보고서 발송"):
+                ok = send_slack(slack_url, st.session_state["full_report"])
+                if ok: st.success("Slack 전송 완료!")
+                else: st.error("Slack 설정을 확인하세요.")
+        with col_t:
+            if st.button("📢 Telegram 채널로 보고서 발송"):
+                ok = send_telegram(tg_token, tg_chat_id, st.session_state["full_report"])
+                if ok: st.success("Telegram 전송 완료!")
+                else: st.error("Telegram 설정을 확인하세요.")
+
+# ------------------------------------------------------------------------------
+# TAB 3: Data Source Status
+# ------------------------------------------------------------------------------
+with tab3:
+    st.subheader("연동된 데이터 소스 및 프로바이더 현황")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.write("**1. 운영 인프라 프로바이더 (운영 MCP / JSON)**")
+        st.caption("현재 적용 중인 인프라 토폴로지 (사이드바에서 업로드 및 실시간 편집 가능)")
+        st.json(infra_provider.infra_data)
+    with col_b:
+        st.write(f"**2. 서드파티 & 사내 가이드 RAG 지식베이스 (총 {len(rag_provider.kb)}건)**")
+        st.caption("사내 보안 규정, 서드파티 NVA/모니터링 규칙 및 사용자 업로드 PDF/TXT")
+        st.json(rag_provider.kb)
+
+# ------------------------------------------------------------------------------
+# TAB 4: Architecture & RAG Guide
+# ------------------------------------------------------------------------------
+with tab4:
+    st.subheader("💡 Cloud SRE-NEXUS 전체 아키텍처 및 RAG 가이드")
+    st.markdown("""
+### 1. 왜 Microsoft 공식 문서 외에 '서드파티 RAG'가 필수적인가요?
+* **MS Learn 공식 문서(학습 MCP)**는 Azure 자체의 표준 기능과 일반적인 설정법만 알려줍니다.
+* 하지만 실제 기업 클라우드 환경에서는 **Palo Alto 차세대 방화벽(NVA), Datadog 모니터링, Confluent Kafka**, 그리고 **"관리자 포트 인터넷 직접 오픈 금지", "TLS 1.2 강제" 같은 사내 보안 규정**이 얽혀 있습니다.
+* 마이크로소프트 공식 문서는 사내 보안 규정이나 서드파티 솔루션과의 라우팅 충돌을 알지 못하므로, **서드파티 RAG를 통해 사내 정책과 연동 매뉴얼을 함께 주입해야만 '사내 인프라 맞춤형' 진단**이 가능합니다.
+
+---
+
+### 2. RAG(검색 증강 생성) 동작 3단계 원리
+1. **문서 수집 (Ingestion)**: 사이드바의 파일 업로더를 통해 사내 보안 규정 PDF나 매뉴얼을 등록합니다 (`pypdf` 자동 텍스트 추출).
+2. **지식 결합 (Fusion)**: 사용자가 질문하거나 인프라 이벤트가 발생하면 다음 3가지 소스를 융합합니다:
+   - ① **운영 MCP**: 현재 내 인프라 자원 목록 (서브넷, VM 스펙, NSG)
+   - ② **학습 MCP**: Microsoft Learn 공식 기술 문서
+   - ③ **서드파티 RAG**: 사내 보안 규정 + 서드파티 연동 지침
+3. **교차 검증 (Reasoning)**: Gemini AI가 3가지 지식을 대조하여 **"사내 규정을 위배하지 않으면서 서드파티 솔루션을 올바르게 연결하는 런북"**을 생성합니다.
+""")
+
+# ------------------------------------------------------------------------------
+# TAB 5: Google Apps Script Webhook
+# ------------------------------------------------------------------------------
+with tab5:
+    st.subheader("Google Apps Script ➔ 본 통합 시스템 연동 안내")
+    st.markdown(f"설정된 웹훅 URL: `{settings.GAS_WEBHOOK_URL}`")
+    st.info("💡 Streamlit은 웹 화면용 서버이므로, Google Apps Script에서는 슬랙/메신저로 알림을 쏘며 아래 주소를 클릭하도록 링크를 전달하는 방식을 권장합니다.")
+    st.code("https://ebfsrxrsmffy9g8ynyrfvj.streamlit.app", language="text")
