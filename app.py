@@ -6,13 +6,14 @@ A unified Streamlit platform integrating:
 - Learning MCP: Live Microsoft Learn documentation search
 - Third-Party & Internal RAG: Palo Alto NVA, Datadog, Confluent, and compliance policies
 - Event Trigger & Real-time Dispatcher: Slack & Telegram alerts
-All settings and credentials loaded via centralized config (.env).
+All settings and credentials loaded via centralized config (.env & st.secrets).
 """
 
 import json
 import os
 import urllib.request
 import urllib.parse
+import urllib.error
 import streamlit as st
 from config import settings
 
@@ -37,7 +38,6 @@ class InfraProvider:
             except Exception as e:
                 self.infra_data = {"error": f"JSON 로드 실패: {e}"}
         else:
-            # 향후 실제 Azure MCP Server 또는 ARM REST API 호출로 확장
             self.infra_data = {
                 "status": "Live Azure MCP 연결 대기 중",
                 "endpoint": self.live_endpoint,
@@ -50,7 +50,7 @@ class InfraProvider:
         return f"[실시간 Azure MCP 연동] 엔드포인트: {self.live_endpoint}"
 
 
-# [프로바이더 2] 공식 지식 프로바이더 (학습 MCP: MS Learn + 멀티클라우드 확장)
+# [프로바이더 2] 공식 지식 프로바이더 (학습 MCP: MS Learn)
 class LearnMCPProvider:
     def __init__(self, enable_multicloud: bool = None, search_limit: int = None, timeout: int = None):
         self.enable_multicloud = settings.ENABLE_MULTICLOUD if enable_multicloud is None else enable_multicloud
@@ -83,7 +83,6 @@ class LearnMCPProvider:
 class ThirdPartyRAGProvider:
     def __init__(self, enabled: bool = None):
         self.enabled = settings.ENABLE_THIRD_PARTY_RAG if enabled is None else enabled
-        # 내장 서드파티 및 사내 보안 규정 지식베이스 (향후 Chroma/Qdrant 벡터DB로 교체 가능)
         self.kb = [
             {
                 "solution": "Palo Alto VM-Series NVA",
@@ -157,25 +156,61 @@ def send_telegram(bot_token: str, chat_id: str, text: str) -> bool:
 
 
 # ==============================================================================
-# 3. LLM 오케스트레이션 헬퍼 (Google AI Studio Free Tier)
+# 3. LLM 오케스트레이션 헬퍼 (다중 모델 자동 폴백 및 404 복구)
 # ==============================================================================
-def call_gemini(api_key: str, system_prompt: str, user_prompt: str) -> str:
-    active_key = api_key or settings.GEMINI_API_KEY
+def call_gemini(api_key: str, system_prompt: str, user_prompt: str, preferred_model: str = None) -> str:
+    active_key = str(api_key or settings.GEMINI_API_KEY).strip()
     if not active_key:
-        return "⚠️ .env 파일에 GEMINI_API_KEY를 설정하거나 사이드바에 API Key를 입력해주세요."
+        return "⚠️ Secrets 또는 사이드바에 유효한 Gemini API Key를 입력해주세요."
     
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.GEMINI_MODEL}:generateContent?key={active_key}"
+    # 2026 활성 모델 우선순위 자동 폴백 (404 Not Found 방지)
+    primary = (preferred_model or settings.GEMINI_MODEL or "gemini-2.5-flash").strip()
+    candidate_models = [
+        primary,
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash",
+        "gemini-2.5-pro"
+    ]
+    models_to_try = []
+    for m in candidate_models:
+        if m and m not in models_to_try:
+            models_to_try.append(m)
+
     payload = {
         "contents": [{"parts": [{"text": f"[시스템 프롬프트]\n{system_prompt}\n\n[사용자 입력]\n{user_prompt}"}]}],
         "generationConfig": {"temperature": settings.GEMINI_TEMPERATURE}
     }
-    try:
-        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=settings.GEMINI_TIMEOUT_SECONDS) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception as e:
-        return f"LLM 호출 실패: {e}"
+    json_bytes = json.dumps(payload).encode("utf-8")
+    last_error_details = []
+
+    for model in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={active_key}"
+        try:
+            req = urllib.request.Request(url, data=json_bytes, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=settings.GEMINI_TIMEOUT_SECONDS) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+        except urllib.error.HTTPError as e:
+            try:
+                err_text = e.read().decode("utf-8")
+                err_json = json.loads(err_text)
+                detail_msg = err_json.get("error", {}).get("message", err_text[:200])
+            except Exception:
+                detail_msg = str(e)
+            
+            last_error_details.append(f"• {model} (HTTP {e.code}): {detail_msg}")
+            
+            # 404(모델 미지원)일 경우 다음 최신 모델로 즉시 폴백
+            if e.code == 404:
+                continue
+            elif e.code in (400, 403):
+                return f"❌ **API Key 인증 실패 (HTTP {e.code})**:\n{detail_msg}\n\n👉 Google AI Studio (https://aistudio.google.com/)에서 새로 발급받은 API Key인지 확인해 주세요."
+        except Exception as e:
+            last_error_details.append(f"• {model}: {e}")
+
+    return f"❌ **LLM 호출 실패 (후보 모델 전체 시도 완료)**:\n" + "\n".join(last_error_details)
 
 
 # ==============================================================================
@@ -187,22 +222,36 @@ st.set_page_config(
     layout="wide"
 )
 
-# 사이드바: 환경변수(.env) 기반 기본값 로드 및 실시간 오버라이드
 st.sidebar.title(f"⚙️ {settings.PROJECT_NAME}")
-st.sidebar.caption("중앙 환경 변수(.env) 연동 상태")
+st.sidebar.caption("중앙 환경 변수 & Secrets 연동 상태")
 
-# 0. API 키 설정 (기본값: settings.GEMINI_API_KEY)
 api_key = st.sidebar.text_input(
     "Gemini API Key (무료)",
     value=settings.GEMINI_API_KEY,
     type="password",
-    help=".env 파일의 GEMINI_API_KEY 값이 기본 로드됩니다."
+    help=".env 또는 Streamlit Secrets의 GEMINI_API_KEY 값이 기본 로드됩니다."
+)
+
+model_options = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash-latest",
+    "gemini-2.5-pro"
+]
+default_model_idx = 0
+if settings.GEMINI_MODEL in model_options:
+    default_model_idx = model_options.index(settings.GEMINI_MODEL)
+
+selected_model = st.sidebar.selectbox(
+    "Gemini 모델 선택",
+    options=model_options,
+    index=default_model_idx,
+    help="Google 공식 정책에 따라 2.5-flash 또는 2.0-flash 사용을 권장합니다."
 )
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔌 프로바이더 연결 설정")
 
-# 1. 운영 인프라 프로바이더 모드 선택
 infra_options = ["Mock 모드 (my_infra.json)", "Live Azure MCP Server (실시간)"]
 default_idx = 0 if settings.INFRA_SOURCE_TYPE == "mock" else 1
 infra_mode = st.sidebar.radio("1. 운영 인프라 MCP 모드", infra_options, index=default_idx)
@@ -212,7 +261,7 @@ if "Live" in infra_mode:
     live_endpoint = st.sidebar.text_input(
         "Azure MCP 엔드포인트 URL",
         value=settings.AZURE_MCP_ENDPOINT,
-        help=".env의 AZURE_MCP_ENDPOINT 값"
+        help="MCP Server SSE 엔드포인트 주소"
     )
 
 infra_provider = InfraProvider(
@@ -221,14 +270,12 @@ infra_provider = InfraProvider(
     live_endpoint=live_endpoint
 )
 
-# 2. 학습 MCP 프로바이더 설정
 enable_multi = st.sidebar.checkbox(
     "2. 멀티클라우드 MCP 확장 (AWS/GCP)",
     value=settings.ENABLE_MULTICLOUD
 )
 learn_mcp = LearnMCPProvider(enable_multicloud=enable_multi)
 
-# 3. 서드파티 RAG 프로바이더 설정
 enable_rag = st.sidebar.checkbox(
     "3. 서드파티 & 사내 가이드 RAG 활성화",
     value=settings.ENABLE_THIRD_PARTY_RAG,
@@ -237,23 +284,10 @@ enable_rag = st.sidebar.checkbox(
 rag_provider = ThirdPartyRAGProvider(enabled=enable_rag)
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("📢 알림 채널 연동 (.env 연동)")
-slack_url = st.sidebar.text_input(
-    "Slack Webhook URL",
-    value=settings.SLACK_WEBHOOK_URL,
-    placeholder="https://hooks.slack.com/..."
-)
-tg_token = st.sidebar.text_input(
-    "Telegram Bot Token",
-    value=settings.TELEGRAM_BOT_TOKEN,
-    placeholder="123456789:...",
-    type="password"
-)
-tg_chat_id = st.sidebar.text_input(
-    "Telegram Chat ID",
-    value=settings.TELEGRAM_CHAT_ID,
-    placeholder="123456789"
-)
+st.sidebar.subheader("📢 알림 채널 연동 (.env / Secrets)")
+slack_url = st.sidebar.text_input("Slack Webhook URL", value=settings.SLACK_WEBHOOK_URL, placeholder="https://hooks.slack.com/...")
+tg_token = st.sidebar.text_input("Telegram Bot Token", value=settings.TELEGRAM_BOT_TOKEN, placeholder="123456789:...", type="password")
+tg_chat_id = st.sidebar.text_input("Telegram Chat ID", value=settings.TELEGRAM_CHAT_ID, placeholder="123456789")
 
 if st.sidebar.button("🔔 알림 테스트"):
     test_text = f"☁️ [{settings.PROJECT_NAME}] 통합 알림 테스트 성공!"
@@ -262,9 +296,8 @@ if st.sidebar.button("🔔 알림 테스트"):
     if s_ok: st.sidebar.success("Slack 전송 성공")
     if t_ok: st.sidebar.success("Telegram 전송 성공")
     if not s_ok and not t_ok:
-        st.sidebar.warning("알림 설정을 확인하세요 (.env 또는 입력창).")
+        st.sidebar.warning("알림 설정을 확인하세요 (.env, Secrets 또는 사이드바 입력창).")
 
-# 메인 헤더
 st.title(f"☁️ {settings.PROJECT_NAME}")
 st.caption("운영 MCP (내 인프라) + 학습 MCP (MS Learn) + 서드파티 RAG (Palo Alto, Datadog 등) + 이벤트 트리거 & 알림 전파")
 
@@ -280,7 +313,6 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # ------------------------------------------------------------------------------
 with tab1:
     st.subheader("인프라 토폴로지 + 공식 문서 + 서드파티 솔루션 교차 질의")
-    
     col1, col2 = st.columns([4, 1])
     with col1:
         user_query = st.text_input(
@@ -293,7 +325,7 @@ with tab1:
         ask_btn = st.button("질문하기 🚀", use_container_width=True)
 
     if ask_btn and user_query:
-        with st.spinner("운영 인프라 스펙 대조, MS Learn 및 서드파티 RAG 검색 중..."):
+        with st.spinner(f"운영 인프라 스펙 대조, MS Learn 및 서드파티 RAG 검색 중 ({selected_model})..."):
             infra_context = infra_provider.get_summary()
             learn_context = learn_mcp.search(user_query)
             rag_context = rag_provider.search(user_query)
@@ -316,10 +348,9 @@ with tab1:
 2. 서드파티(Palo Alto, Datadog 등) 연동 요구사항과 공식 Azure 아키텍처 간의 충돌 여부를 짚어줄 것.
 3. 실행 가능한 구체적인 CLI/설정 가이드를 포함할 것.
 """
-            answer = call_gemini(api_key, sys_prompt, user_query)
+            answer = call_gemini(api_key, sys_prompt, user_query, preferred_model=selected_model)
             st.markdown(answer)
             st.markdown("---")
-            
             with st.expander("🔍 이번 답변에 참조된 통합 소스 상세 확인"):
                 st.markdown(f"**[학습 MCP]**\n{learn_context}")
                 st.markdown(f"**[서드파티 RAG]**\n{rag_context}")
@@ -329,7 +360,6 @@ with tab1:
 # ------------------------------------------------------------------------------
 with tab2:
     st.subheader("이벤트 감지 ➔ 인프라 & 서드파티 영향도 평가 ➔ 실시간 알림 전파")
-    
     event_type = st.selectbox(
         "테스트할 클라우드 이벤트 선택:",
         [
@@ -341,7 +371,7 @@ with tab2:
     )
 
     if st.button("⚡ 종합 영향도 분석 실행"):
-        with st.spinner("인프라 토폴로지, 공식 스펙, 서드파티 가이드 종합 분석 중..."):
+        with st.spinner(f"인프라 토폴로지, 공식 스펙, 서드파티 가이드 종합 분석 중 ({selected_model})..."):
             infra_context = infra_provider.get_summary()
             learn_context = learn_mcp.search(event_type)
             rag_context = rag_provider.search(event_type)
@@ -369,7 +399,7 @@ with tab2:
 3. **위험 요인 및 장애 여파(Blast Radius)**: 사내 규정 위배 여부 및 서비스 중단 가능성
 4. **단계별 대응 런북(Runbook)**: 실제 실행할 구체적인 명령어 및 조치 플랜
 """
-            report = call_gemini(api_key, sys_prompt, "종합 보고서를 작성해줘.")
+            report = call_gemini(api_key, sys_prompt, "종합 보고서를 작성해줘.", preferred_model=selected_model)
             st.session_state["full_report"] = report
 
     if "full_report" in st.session_state:
@@ -405,23 +435,7 @@ with tab3:
 # TAB 4: Google Apps Script Webhook
 # ------------------------------------------------------------------------------
 with tab4:
-    st.subheader("Google Apps Script ➔ 본 통합 시스템 연동 웹훅")
+    st.subheader("Google Apps Script ➔ 본 통합 시스템 연동 안내")
     st.markdown(f"설정된 웹훅 URL: `{settings.GAS_WEBHOOK_URL}`")
-    st.code("""
-function sendToCloudSreNexus(eventTitle, eventDetails, category) {
-  var pocUrl = "https://your-cloud-run-url/webhook";
-  var payload = {
-    "project": "Cloud SRE-NEXUS",
-    "timestamp": new Date().toISOString(),
-    "event_type": category || "Azure Service Update",
-    "title": eventTitle,
-    "details": eventDetails,
-    "source": "GAS Automated RSS Monitor"
-  };
-  UrlFetchApp.fetch(pocUrl, {
-    method: "post",
-    contentType: "application/json",
-    payload: JSON.stringify(payload)
-  });
-}
-""", language="javascript")
+    st.info("💡 Streamlit은 웹 화면용 서버이므로, Google Apps Script에서는 슬랙/메신저로 알림을 쏘며 아래 주소를 클릭하도록 링크를 전달하는 방식을 권장합니다.")
+    st.code("https://ebfsrxrsmffy9g8ynyrfvj.streamlit.app", language="text")
