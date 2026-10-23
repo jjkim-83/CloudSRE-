@@ -4,8 +4,8 @@ Project       : Cloud SRE-NEXUS (Autonomous Cloud Operations & Architecture Copi
 File Path     : cloud_sre_nexus/app.py
 File Name     : app.py
 Description   : Streamlit 기반 SRE 에이전트 프론트엔드 대시보드 UI (한국어 번역 RSS 타이틀 연동)
-Last Modified : 2026-10-23 16:25:00 KST (Asia/Seoul)
-Version       : v1.8.0 (Azure RSS 한국어 자동 번역 타이틀 및 하이브리드 로컬라이제이션)
+Last Modified : 2026-10-23 16:56:00 KST (Asia/Seoul)
+Version       : v1.8.1 (Azure RSS 환경변수 자동 참조 및 호출부 간소화)
 Author/Owner  : Cloud SRE Team
 =============================================================================
 A unified Streamlit UI dashboard connecting:
@@ -308,8 +308,9 @@ with tab2:
                 fetch_azure_rss_updates.clear()
                 st.rerun()
         
-        rss_items = fetch_azure_rss_updates(limit=8, api_key=api_key)
+        rss_items = fetch_azure_rss_updates(limit=8)
         
+        # 한국어 또는 영문 옵션 텍스트 생성
         if show_ko:
             rss_options = [f"[{item['pub_date']}] {item.get('title_ko', item['title'])}" for item in rss_items]
         else:
