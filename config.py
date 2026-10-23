@@ -1,14 +1,13 @@
 """
-Cloud SRE-NEXUS - Centralized Configuration Module
-===================================================
-최종 수정 일시: 2026-10-23 14:45:10 KST (Asia/Seoul)
-버전: v1.2.0 (Google 최신 모델 gemini-3.8-flash 반영 및 404 해결)
-===================================================
-Loads environment variables from:
-1. System environment variables (os.environ)
-2. Local .env file (via python-dotenv)
-3. Streamlit Cloud Secrets (st.secrets fallback)
-Provides typed access, fallback defaults, and validation for all components.
+=============================================================================
+Project       : Cloud SRE-NEXUS (Autonomous Cloud Operations & Architecture Copilot)
+File Path     : cloud_sre_nexus/config.py
+File Name     : config.py
+Description   : 중앙 환경 변수 및 설정 로더 모듈 (.env, st.secrets, os.environ)
+Last Modified : 2026-10-23 14:52:00 KST (Asia/Seoul)
+Version       : v1.3.0 (Google 503 일시혼잡 자동 재시도 및 경량 모델 폴백 적용)
+Author/Owner  : Cloud SRE Team
+=============================================================================
 """
 
 import os
@@ -68,7 +67,7 @@ class Config:
     APP_ENV: str = _get_str("APP_ENV", "production")
     APP_PORT: int = _get_int("APP_PORT", 8501)
 
-    # Google 2026 공식 표준 모델: gemini-3.8-flash
+    # Google 2026 공식 표준 모델
     GEMINI_API_KEY: str = _get_str("GEMINI_API_KEY", "")
     GEMINI_MODEL: str = _get_str("GEMINI_MODEL", "gemini-3.8-flash")
     GEMINI_TEMPERATURE: float = _get_float("GEMINI_TEMPERATURE", 0.2)
