@@ -4,8 +4,8 @@ Project       : Cloud SRE-NEXUS (Autonomous Cloud Operations & Architecture Copi
 File Path     : cloud_sre_nexus/config.py
 File Name     : config.py
 Description   : 중앙 환경 변수 및 멀티클라우드 MCP 설정 로더 모듈 (.env, st.secrets, os.environ)
-Last Modified : 2026-10-23 15:05:00 KST (Asia/Seoul)
-Version       : v1.4.0 (Mock UI 업로드/편집 및 멀티클라우드 MCP 엔드포인트 확장)
+Last Modified : 2026-10-23 15:30:00 KST (Asia/Seoul)
+Version       : v1.5.0 (RAG 1단계 동적 PDF/TXT 문서 인덱싱 및 가이드 탑재)
 Author/Owner  : Cloud SRE Team
 =============================================================================
 """
