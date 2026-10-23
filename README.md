@@ -3,9 +3,9 @@
 Project       : Cloud SRE-NEXUS (Autonomous Cloud Operations & Architecture Copilot)
 File Path     : cloud_sre_nexus/README.md
 File Name     : README.md
-Description   : 프로젝트 통합 가이드 및 운영 매뉴얼 (아키텍처, MCP/RAG 구조, 배포법)
-Last Modified : 2026-10-23 15:47:10 KST (Asia/Seoul)
-Version       : v1.5.0 (RAG 1단계 PDF 파싱, 503 재시도, Streamlit 최적화 반영)
+Description   : 프로젝트 통합 마스터 가이드 (기획 배경, 듀얼 MCP/RAG 아키텍처, 실시간 RSS, 배포 및 트러블슈팅)
+Last Modified : 2026-10-23 15:55:00 KST (Asia/Seoul)
+Version       : v1.6.0 (실시간 Azure RSS 피드 연동, PDF RAG 1단계, 엔터프라이즈 마스터 문서화)
 Author/Owner  : Cloud SRE Team
 =============================================================================
 -->
@@ -16,27 +16,54 @@ Author/Owner  : Cloud SRE Team
 
 ---
 
-## 📌 핵심 기능 및 아키텍처 (`v1.5.0` 기준)
+## 📖 1. 프로젝트 기획 및 탄생 배경
 
-Cloud SRE-NEXUS는 단순한 질의응답 챗봇이 아닌, **내 인프라의 현재 스펙(운영 MCP)**과 **마이크로소프트 공식 기술 문서(학습 MCP)**, 그리고 **사내 보안 규정 및 서드파티 솔루션(RAG)**을 삼각 교차 검증하여 장애 영향도를 진단하고 실행 런북을 자동 생성하는 SRE 운영 허브입니다.
+### 1) 시작점: 단순 스크립트의 한계
+클라우드 운영 현장에서는 매주 쏟아지는 클라우드 릴리스(Azure Updates RSS), 보안 권고문, 서비스 헬스 장애 경보를 실시간으로 모니터링해야 합니다. 초기에는 Google Apps Script(GAS) 등을 이용해 문서를 동기화하고 크롤링하려 했으나, 다음과 같은 근본적인 한계에 부딪혔습니다:
+* 마이크로소프트의 방대한 182건 이상의 기술 문서 카테고리를 단순 정적 문서로 다루면 최신 변경사항을 제때 반영할 수 없습니다.
+* 단순 챗봇이나 일반 RAG는 **"지금 당장 내 Azure 테넌트에 어떤 VNet과 VM, 스토리지가 떠 있는지(운영 상태)"**를 알지 못해 원론적인 교과서 답변만 내놓습니다.
+
+### 2) MCP vs RAG 논쟁: 무엇이 정답인가?
+* **"공식 문서는 MCP로 충분한가?"**: 마이크로소프트가 공식 제공하는 Model Context Protocol(MCP)을 사용하면 Azure 리소스와 공식 문서를 표준 프로토콜로 읽어올 수 있습니다.
+* **"그렇다면 RAG는 왜 필요한가?"**: MS 공식 문서는 **우리 회사가 도입한 Palo Alto 방화벽(NVA), Datadog 모니터링 파이프라인, Confluent Kafka**, 그리고 **"관리자 포트 인터넷 개방 금지", "TLS 1.2+ 강제" 같은 사내 보안 규정**을 전혀 모릅니다.
+* **결론 (하이브리드 아키텍처 도출)**:
+  1. **운영 MCP**: 내 인프라의 현재 자원 토폴로지를 실시간 스캔
+  2. **학습 MCP**: Microsoft Learn 공식 기술 문서를 무과금 실시간 검색
+  3. **서드파티 RAG**: 사내 보안 내규 및 외부 연동 솔루션 매뉴얼 교차 검증
+  4. **실시간 RSS 피드 & 알림**: 공식 업데이트 수신 즉시 인프라 영향도(Blast Radius) 진단 및 Slack/Telegram 런북 전파
+
+---
+
+## 🏛️ 2. 전체 시스템 아키텍처 및 데이터 파이프라인
+
+Cloud SRE-NEXUS는 다음 5대 영역이 유기적으로 결합된 자율형 SRE 에이전트입니다:
 
 ```text
-[클라우드 이벤트 / 사용자 질의]
-                 │
-                 ▼
+[Azure Updates 실시간 RSS]  ──(30분 캐시)──┐
+[Service Health / 장애 경보] ──(GAS 웹훅)──┤
+[엔지니어 직접 자연어 질의] ───────────────┼────────┐
+                                          │        │
+                                          ▼        ▼
 ┌────────────────────────────────────────────────────────┐
-│               Cloud SRE-NEXUS Core Engine              │
+│             Cloud SRE-NEXUS Core Engine                │
 │                                                        │
-│  [1. 운영 MCP]         [2. 학습 MCP]      [3. 서드파티 RAG]   │
-│  • Mock JSON 편집기    • MS Learn 실시간   • 사내 규정 v3.2     │
-│  • Live Azure MCP      • AWS/GCP 확장     • Palo Alto / DD     │
-│  (내 인프라 현황)      (공식 표준 스펙)   (사내 내규/매뉴얼)    │
+│  [1. 운영 인프라 MCP]    [2. 공식 학습 MCP]  [3. 서드파티 RAG]  │
+│  • Mock 웹 편집/업로드   • MS Learn 실시간   • 사내 보안 규정   │
+│  • Live Azure MCP(:8000) • AWS/GCP 멀티확장  • Palo Alto/DD    │
+│  (내 인프라 자원 토폴로지) (공식 표준 스펙)   (사내 내규/매뉴얼) │
 └───────────────────────┬────────────────────────────────┘
                         │
-                        ▼ (삼각 교차 추론 & 런북 생성)
+                        ▼ (삼각 교차 추론 & Blast Radius 평가)
 ┌────────────────────────────────────────────────────────┐
-│                   SRE Action & Alert                   │
-│   • 인프라 영향도(Blast Radius) 및 위험 등급 평가       │
-│   • 사내 규정 준수 단계별 런북(Runbook) 도출           │
-│   • Slack Webhook 및 Telegram 실시간 원클릭 전파       │
+│             Google Gemini AI Engine (v1.6.0)           │
+│   • 1순위: gemini-3.8-flash (2026년 최신 표준 모델)      │
+│   • 503 서버 혼잡 시: 지능형 백오프 재시도 및 하위 폴백   │
+│   • 런북(Runbook): 단계별 명령어 및 장애 조치 절차 생성    │
+└───────────────────────┬────────────────────────────────┘
+                        │
+                        ▼ (실시간 원클릭 전파)
+┌────────────────────────────────────────────────────────┐
+│               Enterprise Notification Hub              │
+│   • Slack Incoming Webhook (대시보드 링크 첨부)        │
+│   • Telegram Bot API (Markdown 포맷 보고서 전송)       │
 └────────────────────────────────────────────────────────┘
