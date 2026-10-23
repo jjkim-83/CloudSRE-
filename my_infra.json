@@ -1,70 +1,202 @@
 {
-  "subscription": {
-    "id": "sub-12345678-abcd-ef01-2345-6789abcdef01",
-    "name": "Production-Enterprise-Subscription",
-    "region": "koreacentral"
-  },
-  "resources": [
+  "topology": "Azure Enterprise Landing Zone (Hub-and-Spoke)",
+  "company_prefix": "hazr",
+  "location": "koreacentral",
+  "subscriptions": [
     {
-      "type": "Microsoft.Compute/virtualMachines",
-      "name": "vm-prod-web-01",
-      "size": "Standard_D4s_v5",
-      "os": "Ubuntu 22.04 LTS",
-      "subnet": "snet-web-10.0.1.0/24",
-      "availabilityZone": "1",
-      "backupEnabled": true,
-      "publicIp": false
-    },
-    {
-      "type": "Microsoft.Compute/virtualMachines",
-      "name": "vm-prod-db-01",
-      "size": "Standard_E8s_v5",
-      "os": "RHEL 9.2",
-      "subnet": "snet-db-10.0.2.0/24",
-      "availabilityZone": "2",
-      "backupEnabled": true,
-      "publicIp": false
-    },
-    {
-      "type": "Microsoft.Network/virtualNetworks",
-      "name": "vnet-prod-koreacentral",
-      "addressSpace": ["10.0.0.0/16"],
-      "subnets": [
-        {"name": "snet-web", "cidr": "10.0.1.0/24", "nsg": "nsg-prod-web"},
-        {"name": "snet-db", "cidr": "10.0.2.0/24", "nsg": "nsg-prod-db"}
+      "subscription_id": "sub-hazr-hub-ldz-01",
+      "subscription_name": "Hub & Platform Shared Services (Landing Zone)",
+      "environment": "Production",
+      "role": "Hub (공통 연결성 & 보안 거버넌스)",
+      "virtual_networks": [
+        {
+          "name": "hazr-p-ldz-vnet-hub-01",
+          "address_space": [
+            "10.155.0.0/16"
+          ],
+          "subnets": [
+            {
+              "name": "AzureFirewallSubnet",
+              "address_prefix": "10.155.1.0/26",
+              "purpose": "중앙 집중형 Azure Firewall 아웃바운드 인터넷 트래픽 검사"
+            },
+            {
+              "name": "GatewaySubnet",
+              "address_prefix": "10.155.2.0/27",
+              "purpose": "온프레미스 VPN / ExpressRoute 연동 게이트웨이"
+            },
+            {
+              "name": "snet-dns-in",
+              "address_prefix": "10.155.3.0/28",
+              "delegation": "Microsoft.Network/dnsResolvers",
+              "purpose": "프라이빗 DNS 인바운드 리졸버 (Spoke 및 온프레미스 DNS 질의 수신)"
+            }
+          ]
+        }
       ],
-      "peerings": ["peering-to-hub-vnet"]
-    },
-    {
-      "type": "Microsoft.Network/networkSecurityGroups",
-      "name": "nsg-prod-web",
-      "rules": [
-        {"name": "Allow-HTTPS", "priority": 100, "access": "Allow", "direction": "Inbound", "port": "443", "source": "Internet"},
-        {"name": "Allow-SSH-Admin", "priority": 200, "access": "Allow", "direction": "Inbound", "port": "22", "source": "10.100.0.0/24"}
+      "shared_resources": [
+        {
+          "type": "Microsoft.Network/dnsResolvers",
+          "name": "hazr-l-inf-dnspr-01",
+          "vnet": "hazr-p-ldz-vnet-hub-01",
+          "description": "중앙 프라이빗 DNS 확인자 (Azure Private DNS Resolver)"
+        },
+        {
+          "type": "Microsoft.ContainerRegistry/registries",
+          "name": "hazrlcomcr01",
+          "sku": "Premium",
+          "public_network_access": "Disabled",
+          "admin_user_enabled": false,
+          "description": "사내 표준 공통 프라이빗 컨테이너 레지스트리 (ACR)"
+        },
+        {
+          "type": "Microsoft.KeyVault/vaults",
+          "name": "hazrlseckv01",
+          "sku": "standard",
+          "public_network_access": "Disabled",
+          "features": [
+            "enableSoftDelete",
+            "enablePurgeProtection",
+            "enableRbacAuthorization"
+          ],
+          "description": "인프라 공통 보안 키/인증서 보관소"
+        }
       ]
     },
     {
-      "type": "Microsoft.ContainerService/managedClusters",
-      "name": "aks-prod-cluster",
-      "kubernetesVersion": "1.29.2",
-      "nodePools": [
-        {"name": "systempool", "vmSize": "Standard_D4s_v5", "count": 3, "zones": ["1", "2", "3"]}
+      "subscription_id": "sub-hazr-workload-ltr-01",
+      "subscription_name": "AI & Analytics Workload Spoke (LTR)",
+      "environment": "Production (p)",
+      "workload_prefix": "ltr",
+      "role": "Spoke (AI/ML 워크로드 및 AKS 클러스터)",
+      "virtual_networks": [
+        {
+          "name": "hazr-p-ltr-vnet-01",
+          "address_space": [
+            "10.156.0.0/16"
+          ],
+          "subnets": [
+            {
+              "name": "snet-aks",
+              "address_prefix": "10.156.1.0/24",
+              "purpose": "AKS 쿠버네티스 노드 및 파드 전용 서브넷"
+            },
+            {
+              "name": "snet-pe",
+              "address_prefix": "10.156.2.0/24",
+              "private_endpoint_network_policies": "Disabled",
+              "purpose": "OpenAI, AI Search, Storage 프라이빗 엔드포인트(사설 IP) 전용 서브넷"
+            }
+          ]
+        }
       ],
-      "networkPlugin": "azure"
+      "workload_resources": [
+        {
+          "type": "Microsoft.ContainerService/managedClusters",
+          "name": "hazr-p-ltr-aks-01",
+          "kubernetes_version": "1.28.3",
+          "private_cluster": true,
+          "network_profile": {
+            "networkPlugin": "azure",
+            "loadBalancerSku": "standard",
+            "serviceCidr": "172.16.0.0/16",
+            "dnsServiceIP": "172.16.0.10"
+          },
+          "agent_pools": [
+            {
+              "name": "npsystem",
+              "mode": "System",
+              "vm_size": "Standard_D4ds_v5",
+              "count": 3,
+              "auto_scaling": {
+                "min": 1,
+                "max": 5
+              }
+            },
+            {
+              "name": "npuser",
+              "mode": "User",
+              "vm_size": "Standard_D8ds_v5",
+              "count": 3,
+              "auto_scaling": {
+                "min": 2,
+                "max": 10
+              }
+            }
+          ],
+          "identity": {
+            "type": "UserAssigned",
+            "name": "hazr-p-ltr-id-aks-01"
+          }
+        },
+        {
+          "type": "Microsoft.CognitiveServices/accounts (OpenAI)",
+          "name": "hazr-p-ltr-oai-01",
+          "kind": "OpenAI",
+          "sku": "S0",
+          "public_network_access": "Disabled",
+          "private_endpoint_subnet": "snet-pe"
+        },
+        {
+          "type": "Microsoft.Search/searchServices (AI Search)",
+          "name": "hazr-p-ltr-srch-01",
+          "sku": "standard",
+          "replica_count": 2,
+          "partition_count": 1,
+          "public_network_access": "Disabled",
+          "private_endpoint_subnet": "snet-pe"
+        },
+        {
+          "type": "Microsoft.Storage/storageAccounts",
+          "name": "hazrpltrstml01",
+          "sku": "Standard_ZRS",
+          "kind": "StorageV2",
+          "minimum_tls_version": "TLS1_2",
+          "allow_blob_public_access": false,
+          "supports_https_traffic_only": true,
+          "private_endpoint_subnet": "snet-pe"
+        },
+        {
+          "type": "Microsoft.KeyVault/vaults",
+          "name": "hazrpltrkv01",
+          "sku": "standard",
+          "features": [
+            "enableSoftDelete",
+            "enablePurgeProtection",
+            "enableRbacAuthorization"
+          ],
+          "description": "LTR 워크로드 전용 키/시크릿 보관소"
+        }
+      ]
+    }
+  ],
+  "inter_subscription_relations": [
+    {
+      "relation_type": "Virtual Network Peering",
+      "source_vnet": "hazr-p-ldz-vnet-hub-01 (Hub)",
+      "target_vnet": "hazr-p-ltr-vnet-01 (Spoke)",
+      "status": "Connected",
+      "gateway_transit": true,
+      "description": "Hub VNet과 Spoke VNet 간 비공개 고속 사설 통신"
     },
     {
-      "type": "Microsoft.Storage/storageAccounts",
-      "name": "stproddata01",
-      "sku": "Standard_ZRS",
-      "kind": "StorageV2",
-      "tlsVersion": "TLS1_2",
-      "privateEndpoint": true
+      "relation_type": "Private DNS Resolution",
+      "source": "hazr-p-ltr-vnet-01 (Spoke)",
+      "target": "hazr-l-inf-dnspr-01 (Hub DNS Resolver: 10.155.3.0/28)",
+      "description": "Spoke의 프라이빗 엔드포인트(OpenAI, Search, Storage) FQDN을 Hub DNS 확인자로 중앙 질의"
     },
     {
-      "type": "Microsoft.RecoveryServices/vaults",
-      "name": "rsv-prod-koreacentral",
-      "redundancy": "GeoRedundant",
-      "protectedItems": ["vm-prod-web-01", "vm-prod-db-01"]
+      "relation_type": "Image Pull & Artifacts",
+      "consumer": "hazr-p-ltr-aks-01 (Spoke AKS)",
+      "provider": "hazrlcomcr01 (Hub ACR)",
+      "description": "Spoke AKS의 UserAssigned MSI(hazr-p-ltr-id-aks-01)에 AcrPull 권한을 부여하여 Hub 공통 이미지 풀링"
+    },
+    {
+      "relation_type": "Egress Routing (UDR)",
+      "route_table": "udr-spoke-to-hub-firewall",
+      "next_hop": "10.155.1.0/26 (AzureFirewallSubnet 사설 IP)",
+      "destination": "0.0.0.0/0",
+      "description": "Spoke에서 나가는 모든 외부 인터넷 트래픽을 Hub의 Azure Firewall로 강제 우회 검사"
     }
   ]
 }
