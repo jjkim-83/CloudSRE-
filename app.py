@@ -3,11 +3,17 @@
 Project       : Cloud SRE-NEXUS (Autonomous Cloud Operations & Architecture Copilot)
 File Path     : cloud_sre_nexus/app.py
 File Name     : app.py
-Description   : Streamlit 기반 SRE 에이전트 프론트엔드 대시보드 UI (services.py 분리 리팩토링)
-Last Modified : 2026-10-23 16:20:00 KST (Asia/Seoul)
-Version       : v1.7.0 (모듈 분리 리팩토링 및 신규 MS 릴리즈 RSS 엔드포인트 연동)
+Description   : Streamlit 기반 SRE 에이전트 프론트엔드 대시보드 UI (한국어 번역 RSS 타이틀 연동)
+Last Modified : 2026-10-23 16:25:00 KST (Asia/Seoul)
+Version       : v1.8.0 (Azure RSS 한국어 자동 번역 타이틀 및 하이브리드 로컬라이제이션)
 Author/Owner  : Cloud SRE Team
 =============================================================================
+A unified Streamlit UI dashboard connecting:
+- Operations MCP: Loose-coupling via local mock ARM topology (Web Upload/Edit) or live Azure MCP
+- Learning MCP: Live Microsoft Learn search + AWS/GCP Multi-Cloud MCP Expansion
+- Third-Party & Internal RAG: Built-in 4 solutions + Dynamic PDF/TXT/MD document uploader & parser
+- Live Event Monitor: Microsoft Official Release Communications RSS with Auto Korean Titles
+- Event Trigger & Real-time Dispatcher: Slack & Telegram alerts
 """
 
 import io
@@ -276,16 +282,20 @@ with tab1:
                 st.markdown(f"**[서드파티 RAG]**\n{rag_context}")
 
 # ------------------------------------------------------------------------------
-# TAB 2: Live RSS Event Analysis & SRE Runbook
+# TAB 2: Live RSS Event Analysis & SRE Runbook (한국어 타이틀 지원)
 # ------------------------------------------------------------------------------
 with tab2:
     st.subheader("이벤트 감지 ➔ 인프라 & 서드파티 영향도 평가 ➔ 실시간 알림 전파")
     
-    event_source_mode = st.radio(
-        "이벤트 소스 선택:",
-        ["📡 실시간 Microsoft Azure 릴리즈 RSS (신규 공식 엔드포인트)", "🧪 SRE 시뮬레이션 시나리오 (테스트용)"],
-        horizontal=True
-    )
+    col_mode, col_lang = st.columns([3, 1])
+    with col_mode:
+        event_source_mode = st.radio(
+            "이벤트 소스 선택:",
+            ["📡 실시간 Microsoft Azure 릴리즈 RSS (신규 공식 엔드포인트)", "🧪 SRE 시뮬레이션 시나리오 (테스트용)"],
+            horizontal=True
+        )
+    with col_lang:
+        show_ko = st.toggle("🇰🇷 한국어 번역 보기", value=True, help="릴리즈 타이틀을 한국어 공학 표기로 자동 변환합니다.")
     
     event_title = ""
     event_details = ""
@@ -298,15 +308,25 @@ with tab2:
                 fetch_azure_rss_updates.clear()
                 st.rerun()
         
-        rss_items = fetch_azure_rss_updates(limit=8)
-        rss_options = [f"[{item['pub_date']}] {item['title']}" for item in rss_items]
+        rss_items = fetch_azure_rss_updates(limit=8, api_key=api_key)
+        
+        if show_ko:
+            rss_options = [f"[{item['pub_date']}] {item.get('title_ko', item['title'])}" for item in rss_items]
+        else:
+            rss_options = [f"[{item['pub_date']}] {item['title']}" for item in rss_items]
+
         selected_idx = st.selectbox("최신 Azure 공식 업데이트 공지 선택:", range(len(rss_options)), format_func=lambda x: rss_options[x])
         selected_item = rss_items[selected_idx]
-        event_title = selected_item["title"]
-        event_details = f"발행일: {selected_item['pub_date']}\n내용 요약: {selected_item['description']}"
+        
+        event_title = selected_item.get("title_ko", selected_item["title"])
+        event_details = f"원문제목: {selected_item['title']}\n발행일: {selected_item['pub_date']}\n내용 요약: {selected_item['description']}"
         event_link = selected_item["link"]
         
-        st.info(f"🔗 **Azure 공식 원문 링크**: [{event_link}]({event_link})\n\n📄 **내용 미리보기**: {selected_item['description']}")
+        with st.container(border=True):
+            st.markdown(f"🇰🇷 **한국어 타이틀**: **{selected_item.get('title_ko', selected_item['title'])}**")
+            st.caption(f"🌐 **원문 영문 제목**: {selected_item['title']}")
+            st.caption(f"🔗 **Azure 공식 원문 링크**: [{event_link}]({event_link})")
+            st.markdown(f"📄 **공지 내용 요약**:\n{selected_item['description']}")
     else:
         sim_choice = st.selectbox(
             "테스트할 클라우드 이벤트 선택:",
