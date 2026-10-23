@@ -1,0 +1,18 @@
+# =============================================================================
+# Project       : Cloud SRE-NEXUS (Autonomous Cloud Operations & Architecture Copilot)
+# File Path     : cloud_sre_nexus/.streamlit/config.toml
+# File Name     : config.toml
+# Description   : Streamlit 서버 최적화 및 inotify 한도 초과(Errno 28) 오류 방지 설정
+# Last Modified : 2026-10-23 14:58:00 KST (Asia/Seoul)
+# Version       : v1.3.1
+# Author/Owner  : Cloud SRE Team
+# =============================================================================
+
+[server]
+# inotify watch limit reached 오류 방지: 클라우드 배포 환경 파일 실시간 감시 비활성화
+fileWatcherType = "none"
+runOnSave = false
+headless = true
+
+[browser]
+gatherUsageStats = false
