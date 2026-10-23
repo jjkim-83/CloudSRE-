@@ -4,8 +4,8 @@ Project       : Cloud SRE-NEXUS (Autonomous Cloud Operations & Architecture Copi
 File Path     : cloud_sre_nexus/services.py
 File Name     : services.py
 Description   : SRE 에이전트 핵심 비즈니스 로직 및 프로바이더 모듈 (MCP, RAG, RSS, LLM, 알림)
-Last Modified : 2026-10-23 16:25:00 KST (Asia/Seoul)
-Version       : v1.8.0 (Azure RSS 한국어 자동 번역 타이틀 및 하이브리드 로컬라이제이션)
+Last Modified : 2026-10-23 16:56:00 KST (Asia/Seoul)
+Version       : v1.8.1 (Azure RSS 환경변수 API 키 자동 참조 및 시그니처 TypeError 방지)
 Author/Owner  : Cloud SRE Team
 =============================================================================
 """
@@ -108,7 +108,7 @@ def translate_titles_batch(items: list, api_key: str = "") -> list:
                     if 0 <= idx < len(items):
                         items[idx]["title_ko"] = match.group(2).strip()
     except Exception:
-        pass  # 실패 시 규칙 기반 번역 유지
+        pass  # 실패 시 규칙 기반 번역(quick_translate_title) 유지
     
     return items
 
@@ -117,11 +117,17 @@ def translate_titles_batch(items: list, api_key: str = "") -> list:
 # 1. 실시간 Azure Updates RSS 피드 수집기 (신규 MS 공식 엔드포인트)
 # ==============================================================================
 @cache_data(ttl=1800)
-def fetch_azure_rss_updates(limit: int = 8, api_key: str = ""):
+def fetch_azure_rss_updates(limit: int = 8, *args, **kwargs):
     """
     Microsoft 공식 신규 릴리즈 RSS 엔드포인트에서 최신 공지 비동기 수집 및 한국어화
     - 신규 공식 주소: https://www.microsoft.com/releasecommunications/api/v2/azure/rss
+    - 환경변수 및 settings.GEMINI_API_KEY 자동 참조로 호출부에서 api_key 전달 불필요
+    - 하위 호환성을 위해 *args, **kwargs 수용 (TypeError 방지)
     """
+    api_key = kwargs.get("api_key", "")
+    if not api_key and args:
+        api_key = args[0]
+    api_key = str(api_key or settings.GEMINI_API_KEY).strip()
     candidate_urls = [
         "https://www.microsoft.com/releasecommunications/api/v2/azure/rss",
         "https://azure.microsoft.com/en-us/blog/feed/"
@@ -183,6 +189,7 @@ def fetch_azure_rss_updates(limit: int = 8, api_key: str = ""):
             }
         ]
 
+    # 한국어 타이틀 일괄 생성 (규칙 + AI 하이브리드)
     return translate_titles_batch(raw_items, api_key=api_key)
 
 
