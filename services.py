@@ -4,8 +4,8 @@ Project       : Cloud SRE-NEXUS (Autonomous Cloud Operations & Architecture Copi
 File Path     : cloud_sre_nexus/services.py
 File Name     : services.py
 Description   : SRE 에이전트 핵심 비즈니스 로직 및 프로바이더 모듈 (MCP, RAG, RSS, LLM, 알림)
-Last Modified : 2026-10-23 17:45:00 KST (Asia/Seoul)
-Version       : v1.9.0 (Azure Updates 릴리즈 & Status 장애 하이브리드 필터 분리 아키텍처)
+Last Modified : 2026-10-23 17:55:00 KST (Asia/Seoul)
+Version       : v1.9.2 (초고속 부팅 최적화 및 타임아웃 방지 패치)
 Author/Owner  : Cloud SRE Team
 =============================================================================
 """
@@ -74,17 +74,17 @@ def quick_translate_title(title: str) -> str:
 
 
 def translate_titles_batch(items: list, api_key: str = "") -> list:
-    """Gemini API를 활용해 5~8개 RSS 타이틀을 한 번에 한국어로 매끄럽게 번역"""
+    """Gemini API를 활용해 5~8개 RSS 타이틀을 한 번에 한국어로 매끄럽게 번역 (타임아웃 3.5초 보호)"""
     active_key = str(api_key or settings.GEMINI_API_KEY).strip()
     
-    # 1단계: 규칙 기반 번역 기본 적용
+    # 1단계: 규칙 기반 번역 기본 적용 (0ms 즉시 완료)
     for item in items:
         item["title_ko"] = quick_translate_title(item["title"])
     
     if not active_key or not items:
         return items
 
-    # 2단계: Gemini API를 통해 자연스러운 한국어 문맥 번역 보정 (1회 일괄 호출)
+    # 2단계: Gemini API를 통해 자연스러운 한국어 문맥 번역 보정 (실패 시 즉시 규칙 번역 유지)
     titles_text = "\n".join([f"{i+1}. {it['title']}" for i, it in enumerate(items)])
     prompt = (
         "다음 Microsoft Azure 공식 릴리즈 및 서비스 상태 공지 영문 제목들을 한국어 IT 클라우드 엔지니어가 읽기 편한 자연스러운 한국어로 번역해줘.\n"
@@ -103,7 +103,7 @@ def translate_titles_batch(items: list, api_key: str = "") -> list:
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json", "x-goog-api-key": active_key}
         )
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=3.5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             translated_lines = data["candidates"][0]["content"]["parts"][0]["text"].strip().split("\n")
             
@@ -121,7 +121,7 @@ def translate_titles_batch(items: list, api_key: str = "") -> list:
 
 
 # ==============================================================================
-# 1. 실시간 Azure Updates & Status 피드 수집기 (통합 허브 & 카테고리 필터)
+# 1. 실시간 Azure Updates & Status 피드 수집기 (통합 허브 & 초고속 부팅)
 # ==============================================================================
 def _fetch_channel_items(urls, max_count, cat_name, cat_badge):
     items = []
@@ -132,7 +132,7 @@ def _fetch_channel_items(urls, max_count, cat_name, cat_badge):
     for url in urls:
         try:
             req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=7) as resp:
+            with urllib.request.urlopen(req, timeout=3) as resp:
                 xml_data = resp.read()
                 root = ET.fromstring(xml_data)
                 for item in root.findall("./channel/item")[:max_count]:
@@ -149,7 +149,7 @@ def _fetch_channel_items(urls, max_count, cat_name, cat_badge):
                     items.append({
                         "title": title,
                         "description": clean_desc,
-                        "link": link or ("https://azure.status.microsoft/" if cat_name == "status" else "https://azure.microsoft.com/en-us/updates/"),
+                        "link": link or ("https://status.azure.com/en-us/status" if cat_name == "status" else "https://azure.microsoft.com/en-us/updates/"),
                         "pub_date": pub_date[:16] if pub_date else "최근",
                         "category": cat_name,
                         "badge": cat_badge
@@ -175,7 +175,6 @@ def fetch_azure_rss_updates(limit: int = 8, category: str = "all", *args, **kwar
     api_key = str(api_key or settings.GEMINI_API_KEY).strip()
 
     status_urls = [
-        "https://azure.status.microsoft/en-us/status/feed/",
         "https://status.azure.com/en-us/status/feed/"
     ]
     update_urls = [
@@ -194,7 +193,7 @@ def fetch_azure_rss_updates(limit: int = 8, category: str = "all", *args, **kwar
                 {
                     "title": "Information: Azure Global Services Operational (No Active Outages)",
                     "description": "Microsoft Azure 글로벌 주요 리전 및 코어 인프라 서비스가 현재 정상 가동 중입니다 (진행 중인 광역 장애 없음).",
-                    "link": "https://azure.status.microsoft/",
+                    "link": "https://status.azure.com/en-us/status",
                     "pub_date": "실시간 상태",
                     "category": "status",
                     "badge": "🚨 장애/상태"
@@ -202,7 +201,7 @@ def fetch_azure_rss_updates(limit: int = 8, category: str = "all", *args, **kwar
                 {
                     "title": "Advisory: Azure Planned Maintenance & Host OS Updates Guideline",
                     "description": "가상 머신(VM) 및 App Service 정기 유지보수 및 호스트 OS 보안 패치 대비 지침 및 가용성 세트 구성 권장.",
-                    "link": "https://azure.status.microsoft/",
+                    "link": "https://status.azure.com/en-us/status",
                     "pub_date": "상시 권고",
                     "category": "status",
                     "badge": "🚨 장애/상태"
