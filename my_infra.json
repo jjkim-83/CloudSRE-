@@ -1,0 +1,70 @@
+{
+  "subscription": {
+    "id": "sub-12345678-abcd-ef01-2345-6789abcdef01",
+    "name": "Production-Enterprise-Subscription",
+    "region": "koreacentral"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "name": "vm-prod-web-01",
+      "size": "Standard_D4s_v5",
+      "os": "Ubuntu 22.04 LTS",
+      "subnet": "snet-web-10.0.1.0/24",
+      "availabilityZone": "1",
+      "backupEnabled": true,
+      "publicIp": false
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "name": "vm-prod-db-01",
+      "size": "Standard_E8s_v5",
+      "os": "RHEL 9.2",
+      "subnet": "snet-db-10.0.2.0/24",
+      "availabilityZone": "2",
+      "backupEnabled": true,
+      "publicIp": false
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "name": "vnet-prod-koreacentral",
+      "addressSpace": ["10.0.0.0/16"],
+      "subnets": [
+        {"name": "snet-web", "cidr": "10.0.1.0/24", "nsg": "nsg-prod-web"},
+        {"name": "snet-db", "cidr": "10.0.2.0/24", "nsg": "nsg-prod-db"}
+      ],
+      "peerings": ["peering-to-hub-vnet"]
+    },
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "name": "nsg-prod-web",
+      "rules": [
+        {"name": "Allow-HTTPS", "priority": 100, "access": "Allow", "direction": "Inbound", "port": "443", "source": "Internet"},
+        {"name": "Allow-SSH-Admin", "priority": 200, "access": "Allow", "direction": "Inbound", "port": "22", "source": "10.100.0.0/24"}
+      ]
+    },
+    {
+      "type": "Microsoft.ContainerService/managedClusters",
+      "name": "aks-prod-cluster",
+      "kubernetesVersion": "1.29.2",
+      "nodePools": [
+        {"name": "systempool", "vmSize": "Standard_D4s_v5", "count": 3, "zones": ["1", "2", "3"]}
+      ],
+      "networkPlugin": "azure"
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "name": "stproddata01",
+      "sku": "Standard_ZRS",
+      "kind": "StorageV2",
+      "tlsVersion": "TLS1_2",
+      "privateEndpoint": true
+    },
+    {
+      "type": "Microsoft.RecoveryServices/vaults",
+      "name": "rsv-prod-koreacentral",
+      "redundancy": "GeoRedundant",
+      "protectedItems": ["vm-prod-web-01", "vm-prod-db-01"]
+    }
+  ]
+}
