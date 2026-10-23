@@ -3,9 +3,9 @@
 Project       : Cloud SRE-NEXUS (Autonomous Cloud Operations & Architecture Copilot)
 File Path     : cloud_sre_nexus/config.py
 File Name     : config.py
-Description   : 중앙 환경 변수 및 설정 로더 모듈 (.env, st.secrets, os.environ)
-Last Modified : 2026-10-23 14:52:00 KST (Asia/Seoul)
-Version       : v1.3.0 (Google 503 일시혼잡 자동 재시도 및 경량 모델 폴백 적용)
+Description   : 중앙 환경 변수 및 멀티클라우드 MCP 설정 로더 모듈 (.env, st.secrets, os.environ)
+Last Modified : 2026-10-23 15:05:00 KST (Asia/Seoul)
+Version       : v1.4.0 (Mock UI 업로드/편집 및 멀티클라우드 MCP 엔드포인트 확장)
 Author/Owner  : Cloud SRE Team
 =============================================================================
 """
@@ -73,16 +73,24 @@ class Config:
     GEMINI_TEMPERATURE: float = _get_float("GEMINI_TEMPERATURE", 0.2)
     GEMINI_TIMEOUT_SECONDS: int = _get_int("GEMINI_TIMEOUT_SECONDS", 30)
 
+    # 운영 인프라 MCP (Mock / Live Azure)
     INFRA_SOURCE_TYPE: str = _get_str("INFRA_SOURCE_TYPE", "mock").lower()
     INFRA_JSON_PATH: str = _get_str("INFRA_JSON_PATH", "my_infra.json")
     AZURE_MCP_ENDPOINT: str = _get_str("AZURE_MCP_ENDPOINT", "http://localhost:8000/sse")
 
+    # 멀티클라우드 MCP 확장 (AWS / GCP)
     ENABLE_MULTICLOUD: bool = _get_bool("ENABLE_MULTICLOUD", False)
+    AWS_MCP_ENDPOINT: str = _get_str("AWS_MCP_ENDPOINT", "http://localhost:8001/sse")
+    GCP_MCP_ENDPOINT: str = _get_str("GCP_MCP_ENDPOINT", "http://localhost:8002/sse")
+
+    # 공식 지식 프로바이더 (MS Learn)
     MS_LEARN_SEARCH_LIMIT: int = _get_int("MS_LEARN_SEARCH_LIMIT", 3)
     MS_LEARN_TIMEOUT_SECONDS: int = _get_int("MS_LEARN_TIMEOUT_SECONDS", 10)
 
+    # 서드파티 RAG
     ENABLE_THIRD_PARTY_RAG: bool = _get_bool("ENABLE_THIRD_PARTY_RAG", True)
 
+    # 알림 채널
     SLACK_WEBHOOK_URL: str = _get_str("SLACK_WEBHOOK_URL", "")
     TELEGRAM_BOT_TOKEN: str = _get_str("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID: str = _get_str("TELEGRAM_CHAT_ID", "")
